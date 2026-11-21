@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>MONSTER SHIFT</title>
+
+  <!-- Instant parallel local module preloads (single round-trip, 0ms external CDN wait!) -->
+  <link rel="modulepreload" href="./vendor/three.core.min.js" />
+  <link rel="modulepreload" href="./vendor/three.module.min.js" />
+  <link rel="modulepreload" href="./src/main.js" />
+  <link rel="modulepreload" href="./src/data/catalog.js" />
+  <link rel="modulepreload" href="./src/data/storage.js" />
+  <link rel="modulepreload" href="./src/engine/SceneManager.js" />
+  <link rel="modulepreload" href="./src/engine/CrazyGamesBridge.js" />
+  <link rel="modulepreload" href="./src/models/ArenaBuilder.js" />
+  <link rel="modulepreload" href="./src/models/CharacterFactory.js" />
+  <link rel="modulepreload" href="./src/models/SoftBodySlime.js" />
+  <link rel="modulepreload" href="./src/game/MatchEngine.js" />
+  <link rel="modulepreload" href="./src/ui/UIManager.js" />
+
+  <!-- CrazyGames SDK v3 (non-blocking async; strictly initialized via SDK.init() before use) -->
+  <script src="https://sdk.crazygames.com/crazygames-sdk-v3.js" async></script>
+
+  <!-- Pure local CSS & system rounded fonts (0 external font CDN requests) -->
+  <link rel="stylesheet" href="./styles.css" />
+
+  <!-- Critical inline CSS so the cartoon loading screen appears at 0ms before external files load -->
+  <style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #ff8c1a; }
+    #boot-loader {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      padding: 24px;
+      background: radial-gradient(circle at 50% 38%, #ffbe33 0%, #ff7314 55%, #ff4d00 100%);
+      font-family: 'Fredoka', 'Nunito', 'Segoe UI', system-ui, sans-serif;
+      transition: opacity 0.24s ease, transform 0.24s ease;
+    }
+    #boot-loader.fade-out {
+      opacity: 0;
+      transform: scale(1.04);
+      pointer-events: none;
+    }
+    .boot-slime {
+      width: 104px;
+      height: 104px;
+      animation: bootSquish 0.72s cubic-bezier(0.34, 1.56, 0.64, 1) infinite;
+      filter: drop-shadow(0 8px 0 #14192b);
+    }
+    .boot-title {
+      font-size: clamp(34px, 7vw, 56px);
+      font-weight: 800;
+      color: #ffffff;
+      letter-spacing: 0.03em;
+      -webkit-text-stroke: 4px #14192b;
+      paint-order: stroke fill;
+      text-shadow: 0 7px 0 #14192b;
+      margin: 0;
+      line-height: 1;
+      text-align: center;
+    }
+    .boot-title span { color: #ffe047; }
+    .boot-bar-shell {
+      width: min(320px, 82vw);
+      height: 24px;
+      background: #fffdf6;
+      border: 4px solid #14192b;
+      border-radius: 999px;
+      box-shadow: 0 5px 0 #14192b;
+      overflow: hidden;
+      padding: 2px;
+    }
+    .boot-bar-fill {
+      height: 100%;
+      width: 18%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #52f768, #18c448);
+      transition: width 0.14s ease-out;
+    }
+    .boot-status {
+      font-size: 15px;
+      font-weight: 900;
+      color: #14192b;
+      background: #fffdf6;
+      border: 3px solid #14192b;
+      box-shadow: 0 4px 0 #14192b;
+      border-radius: 999px;
+      padding: 5px 18px;
+    }
+    @keyframes bootSquish {
+      0%, 100% { transform: translateY(0) scale(1.08, 0.9); }
+      45% { transform: translateY(-20px) scale(0.92, 1.12); }
+    }
+  </style>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./vendor/three.module.min.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <!-- INSTANT 0ms CARTOON LOADING SCREEN -->
+  <div id="boot-loader" role="status" aria-live="polite">
+    <svg class="boot-slime" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M14 68C14 36 28 18 50 18C72 18 86 36 86 68C86 82 72 88 50 88C28 88 14 82 14 68Z" fill="#42E87A" stroke="#14192B" stroke-width="6.5"/>
+      <ellipse cx="50" cy="70" rx="22" ry="12" fill="#B4FFCA"/>
+      <circle cx="36" cy="50" r="9.5" fill="#FFFFFF" stroke="#14192B" stroke-width="4.5"/>
+      <circle cx="64" cy="50" r="9.5" fill="#FFFFFF" stroke="#14192B" stroke-width="4.5"/>
+      <circle cx="37.5" cy="50" r="4.8" fill="#14192B"/>
+      <circle cx="65.5" cy="50" r="4.8" fill="#14192B"/>
+      <circle cx="39.5" cy="47.5" r="2" fill="#FFFFFF"/>
+      <circle cx="67.5" cy="47.5" r="2" fill="#FFFFFF"/>
+      <ellipse cx="25" cy="60" rx="5.5" ry="3.2" fill="#FF7FA8"/>
+      <ellipse cx="75" cy="60" rx="5.5" ry="3.2" fill="#FF7FA8"/>
+      <path d="M42 63Q50 71 58 63" stroke="#14192B" stroke-width="5" stroke-linecap="round"/>
+    </svg>
+    <h1 class="boot-title">MONSTER <span>SHIFT</span></h1>
+    <div class="boot-bar-shell">
+      <div id="boot-bar-fill" class="boot-bar-fill"></div>
+    </div>
+    <div id="boot-status" class="boot-status">LOADING SLIME... 15%</div>
+  </div>
+
+  <script>
+    window.__bootStartMs = performance.now();
+    window.__setBootProgress = function (pct, text) {
+      var fill = document.getElementById('boot-bar-fill');
+      var status = document.getElementById('boot-status');
+      if (fill) fill.style.width = Math.max(8, Math.min(100, pct)) + '%';
+      if (status && text) status.textContent = text + ' ' + Math.round(pct) + '%';
+    };
+    window.__hideBootLoader = function () {
+      var el = document.getElementById('boot-loader');
+      if (!el || el.dataset.done) return;
+      el.dataset.done = '1';
+      window.__bootDurationMs = Math.round(performance.now() - window.__bootStartMs);
+      el.dataset.bootMs = String(window.__bootDurationMs);
+      window.__setBootProgress(100, 'READY!');
+      el.classList.add('fade-out');
+      setTimeout(function () { el.style.display = 'none'; }, 250);
+    };
+    window.__showQuickLoader = function (label) {
+      var el = document.getElementById('boot-loader');
+      if (!el) return;
+      delete el.dataset.done;
+      el.style.display = 'flex';
+      el.classList.remove('fade-out');
+      window.__setBootProgress(82, label || 'LOADING MATCH...');
+    };
+    window.__showBootError = function (msg) {
+      var el = document.getElementById('boot-loader');
+      var status = document.getElementById('boot-status');
+      if (!el || el.dataset.done) return;
+      if (status) {
+        status.textContent = 'LOAD ERROR: ' + msg + ' (CLICK TO RETRY)';
+        status.style.background = '#ff3d54';
+        status.style.color = '#ffffff';
+        status.style.cursor = 'pointer';
+        status.onclick = function () { location.reload(); };
+      }
+    };
+    window.addEventListener('error', function (e) {
+      if (!document.getElementById('boot-loader')?.dataset.done) {
+        window.__showBootError(e.message || 'Script failed');
+      }
+    });
+    window.addEventListener('unhandledrejection', function (e) {
+      if (!document.getElementById('boot-loader')?.dataset.done) {
+        window.__showBootError((e.reason && e.reason.message) || String(e.reason || 'Module error'));
+      }
+    });
+  </script>
+
+  <div id="app">
+    <canvas id="game-canvas"></canvas>
+
+    <!-- FIRST-TIME EXPERIENCE OVERLAY -->
+    <div id="intro-overlay" class="screen-layer hidden">
+      <button id="btn-skip-intro" class="skip-intro-btn" type="button">SKIP →</button>
+      <div id="intro-prompt" class="intro-prompt">
+        <span class="prompt-dot"></span>
+        <span id="intro-prompt-text">TAP THE SLIME!</span>
+      </div>
+      <div id="intro-pokes" class="intro-pokes" aria-hidden="true">
+        <span class="poke-pip"></span>
+        <span class="poke-pip"></span>
+        <span class="poke-pip"></span>
+      </div>
+      <div id="intro-logo-pop" class="intro-logo-pop hidden">
+        <div class="logo-wordmark">MONSTER<br /><span>SHIFT</span></div>
+      </div>
+    </div>
+
+    <!-- LOBBY OVERLAY (STRICTLY 4 MAIN BUTTONS + NON-INTERACTIVE CHROME & SETTINGS) -->
+    <div id="lobby-overlay" class="screen-layer hidden">
+      <header class="lobby-topbar">
+        <button id="btn-locker-back" class="locker-back-btn hidden" type="button">← LOBBY</button>
+        <div class="brand-cluster">
+          <div class="brand-badge">
+            <span class="brand-title">MONSTER SHIFT</span>
+          </div>
+          <div id="lobby-rank-pill" class="status-pill rank-topbar-pill" title="View Ranking Board">
+            <span id="lobby-rank-emblem"></span>
+            <span id="lobby-rank-text">BRONZE 1 · 0 RR</span>
+          </div>
+          <div id="lobby-match-prog" class="status-pill match-prog-pill" aria-label="3-Match Reward Progress">
+            <span class="status-dot"></span>
+            <span id="lobby-match-prog-text">REWARD 0/3</span>
+          </div>
+          <div id="lobby-net-pill" class="status-pill">
+            <span id="lobby-net-text">PARTY PARK · 1/6</span>
+          </div>
+        </div>
+
+        <div class="utility-cluster">
+          <div class="coin-pill shard-pill" aria-label="Collection Shards" title="Collection Shards">
+            <span id="shard-svg-slot" class="hud-svg-slot" aria-hidden="true"></span>
+            <span id="lobby-shards">0</span>
+          </div>
+          <div class="coin-pill" aria-label="Coins" title="Coins">
+            <span id="coin-svg-slot" class="hud-svg-slot" aria-hidden="true"></span>
+            <span id="lobby-coins">0</span>
+          </div>
+          <button id="btn-settings" class="icon-btn" type="button" aria-label="Settings" title="Settings">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3.2" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- STRICTLY 4 MAIN LOBBY BUTTONS -->
+      <nav class="lobby-dock" aria-label="Main Menu">
+        <button id="btn-characters" class="dock-btn btn-sky" type="button">
+          <span class="btn-label">LOCKER</span>
+          <span id="locker-badge" class="notif-badge hidden">0</span>
+        </button>
+        <button id="btn-shop" class="dock-btn btn-orange" type="button">
+          <span class="btn-label">SHOP</span>
+        </button>
+        <button id="btn-rewards" class="dock-btn btn-sunny" type="button">
+          <span class="btn-label">REWARDS</span>
+          <span id="rewards-badge" class="notif-badge hidden">!</span>
+        </button>
+        <button id="btn-play" class="dock-btn btn-play" type="button">
+          <span class="btn-label">PLAY</span>
+        </button>
+      </nav>
+    </div>
+
+    <!-- DRAWER PANEL -->
+    <aside id="drawer-shell" class="drawer-shell hidden" aria-modal="true" role="dialog">
+      <div id="drawer-backdrop" class="drawer-backdrop"></div>
+      <div class="drawer-card">
+        <div class="drawer-header">
+          <h2 id="drawer-title">LOCKER</h2>
+          <button id="drawer-close" class="close-btn" type="button" aria-label="Close">✕</button>
+        </div>
+        <div id="drawer-body" class="drawer-body"></div>
+      </div>
+    </aside>
+
+    <!-- COMPACT IN-GAME HUD (Strictly <= 30% of screen area) -->
+    <div id="hud-overlay" class="screen-layer hidden">
+      <div id="danger-vignette" class="danger-vignette hidden"></div>
+      <div id="siren-overlay" class="siren-overlay hidden" aria-hidden="true">
+        <div class="siren-beacon left"></div>
+        <div class="siren-beacon right"></div>
+      </div>
+
+      <div class="hud-top">
+        <div class="hud-card hud-role-card" id="hud-role-card">
+          <span id="hud-role-label" class="hud-role-label">GLOOP</span>
+          <span id="hud-growth-label" class="hud-sub-label">STAGE 1</span>
+          <div id="hud-health-bar" class="hud-health-bar">
+            <div id="hud-health-fill" class="hud-health-fill"></div>
+          </div>
+        </div>
+
+        <div class="hud-timer-pill" id="hud-timer-pill">
+          <span id="hud-timer">01:40</span>
+        </div>
+
+        <div class="hud-right-cluster">
+          <div class="hud-card hud-alive-card">
+            <span class="hud-sub-label">ALIVE</span>
+            <div id="hud-survivor-dots" class="survivor-dots"></div>
+          </div>
+          <button id="btn-pause-match" class="leave-btn pause-btn" type="button" aria-label="Pause Match" title="Pause [ESC]">||</button>
+          <button id="btn-leave-match" class="leave-btn" type="button" aria-label="Leave Match" title="Leave Match">✕</button>
+        </div>
+      </div>
+
+      <div id="alert-banner" class="alert-banner hidden" role="status" aria-live="polite">
+        <span class="alert-icon">!</span>
+        <span id="alert-banner-text">MUTATION DETECTED!</span>
+      </div>
+
+      <div id="hud-banner" class="hud-banner hidden">
+        <div id="hud-banner-title" class="hud-banner-title">YOU ARE THE MONSTER!</div>
+        <div id="hud-banner-sub" class="hud-banner-sub">Catch all 5 survivors!</div>
+      </div>
+
+      <div id="hud-toast" class="hud-toast hidden"></div>
+      <div id="hud-state-pill" class="hud-state-pill hidden">HIDDEN</div>
+      <div id="monster-combo-fx" class="monster-combo-fx hidden" aria-hidden="true"></div>
+      <div id="victory-banner" class="victory-banner hidden" aria-live="assertive"></div>
+      <div id="comic-pop-layer" class="comic-pop-layer" aria-hidden="true"></div>
+
+      <div class="hud-bottom">
+        <div id="touch-joystick-zone" class="touch-joystick-zone">
+          <div id="joystick-base" class="joystick-base">
+            <div id="joystick-knob" class="joystick-knob"></div>
+          </div>
+        </div>
+
+        <div class="hud-controls-hint" id="hud-controls-hint">
+          <span>WASD: Move</span>
+          <span id="hud-primary-hint">SPACE: Ability</span>
+          <span id="hud-secondary-hint">CLICK: Fire</span>
+        </div>
+
+        <div class="hud-actions">
+          <button id="btn-secondary-action" class="action-orb action-secondary" type="button">
+            <span class="action-title" id="secondary-action-label">FIRE</span>
+            <span class="action-key" id="secondary-action-key">CLICK</span>
+            <div class="cooldown-mask" id="secondary-cooldown"></div>
+          </button>
+          <button id="btn-primary-action" class="action-orb action-primary" type="button">
+            <span class="action-title" id="primary-action-label">ABILITY</span>
+            <span class="action-key">SPACE</span>
+            <div class="cooldown-mask" id="primary-cooldown"></div>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- IN-GAME PAUSE OVERLAY (ESC / PAUSE BUTTON / SDK PAUSE) -->
+    <div id="pause-overlay" class="pause-overlay hidden" role="dialog" aria-modal="true" aria-label="Game Paused">
+      <div class="pause-card">
+        <div class="pause-badge">PAUSED</div>
+        <h2 class="pause-title">MATCH PAUSED</h2>
+        <div class="pause-toggles">
+          <button id="btn-pause-sfx" class="mini-btn" type="button">SFX: ON</button>
+          <button id="btn-pause-music" class="mini-btn" type="button">MUSIC: ON</button>
+        </div>
+        <div class="pause-actions">
+          <button id="btn-pause-resume" class="dock-btn btn-play" type="button">RESUME</button>
+          <button id="btn-pause-lobby" class="dock-btn btn-sky" type="button">RETURN TO LOBBY</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MATCH RESULTS OVERLAY -->
+    <div id="results-overlay" class="screen-layer hidden">
+      <div class="results-card">
+        <div id="results-badge" class="results-badge">VICTORY!</div>
+        <h2 id="results-headline" class="results-headline">MONSTER WINS!</h2>
+        <p id="results-summary" class="results-summary"></p>
+        <div id="results-stats" class="results-stats"></div>
+        <div id="results-rank-box" class="results-rank-box hidden"></div>
+        <div id="results-match-prog" class="results-match-prog"></div>
+        <div class="results-actions">
+          <button id="btn-results-lobby" class="dock-btn btn-sky" type="button">LOBBY</button>
+          <button id="btn-results-again" class="dock-btn btn-play" type="button">PLAY AGAIN</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- GRAND RANK-UP CELEBRATION OVERLAY -->
+    <div id="rankup-overlay" class="rankup-overlay hidden" role="dialog" aria-modal="true">
+      <div class="rankup-rays" aria-hidden="true"></div>
+      <div class="rankup-card">
+        <div class="rankup-congrats">CONGRATULATIONS!</div>
+        <div class="rankup-sub">YOU RANKED UP!</div>
+        <div id="rankup-emblem" class="rankup-emblem"></div>
+        <div id="rankup-tier-name" class="rankup-tier-name">SILVER 1</div>
+        <div id="rankup-rr-info" class="rankup-rr-info">+34 RR · 108 RR</div>
+        <button id="btn-rankup-ok" class="dock-btn btn-play" type="button">AWESOME!</button>
+      </div>
+    </div>
+
+    <!-- CARTOON PACK OPENING OVERLAY -->
+    <div id="pack-overlay" class="pack-overlay hidden" role="dialog" aria-modal="true">
+      <div id="pack-stage" class="pack-stage"></div>
+    </div>
+
+    <!-- FULL-SCREEN INTERACTIVE SPOTLIGHT TUTORIAL OVERLAY -->
+    <div id="tutorial-overlay" class="tutorial-overlay hidden" aria-live="polite">
+      <div id="tut-shade-top" class="tut-shade"></div>
+      <div id="tut-shade-bottom" class="tut-shade"></div>
+      <div id="tut-shade-left" class="tut-shade"></div>
+      <div id="tut-shade-right" class="tut-shade"></div>
+      <div id="tut-ring" class="tut-ring"></div>
+      <div id="tut-callout" class="tut-callout">
+        <span id="tut-callout-text">CLICK THIS!</span>
+        <button id="btn-tut-skip" class="tut-skip-btn" type="button" aria-label="Skip Guide" title="Skip Guide">✕</button>
+      </div>
+    </div>
+
+    <!-- LANDSCAPE-ONLY ROTATE DEVICE OVERLAY -->
+    <div id="rotate-overlay" class="rotate-overlay" aria-live="polite">
+      <svg class="rotate-phone-svg" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="34" y="16" width="52" height="88" rx="12" fill="#FFFDF6" stroke="#14192B" stroke-width="6"/>
+        <rect x="42" y="28" width="36" height="60" rx="5" fill="#42E87A" stroke="#14192B" stroke-width="4"/>
+        <circle cx="60" cy="95" r="3.8" fill="#14192B"/>
+        <path d="M98 44C106 54 106 70 96 82" stroke="#FFE047" stroke-width="6" stroke-linecap="round"/>
+        <path d="M95 72L95 84L107 82" stroke="#FFE047" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <div class="rotate-title">ROTATE TO LANDSCAPE!</div>
+      <div class="rotate-sub">MONSTER SHIFT plays best in horizontal landscape mode.</div>
+    </div>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

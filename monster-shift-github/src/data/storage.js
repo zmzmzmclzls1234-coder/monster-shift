@@ -12,6 +12,7 @@ import {
   COLLECTION_MILESTONES,
   getPackById,
   getRankInfo,
+  isChristmasEventActive,
 } from './catalog.js';
 
 const STORAGE_KEY = 'monster_shift_profile_v4';
@@ -26,7 +27,12 @@ export function generateRandomNickname() {
   return `${a}${n}#${tag}`;
 }
 
+export function generatePlayerId() {
+  return 'u_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+}
+
 const DEFAULT_STATE = {
+  playerId: '',
   playerName: '',
   coins: 380,
   shards: 80,
@@ -62,7 +68,8 @@ const DEFAULT_STATE = {
     played: 0,
   },
 
-  packs: { slime_pack: 1, super_pack: 0, neon_pack: 0, legendary_pack: 0 },
+  packs: { xmas_pack: 0, slime_pack: 1, super_pack: 0, neon_pack: 0, legendary_pack: 0 },
+  xmasGiftGranted: false,
 
   matchesCompleted: 0,
   threeMatchClaims: 0,
@@ -83,8 +90,29 @@ const DEFAULT_STATE = {
     music: true,
     shadows: true,
     reducedShake: false,
+    graphicsQuality: 'auto', // 'auto' | 'high' | 'low'
+  },
+
+  // MONSTER PASS (Priority Ticket): guarantees the local player is the Monster next match.
+  monsterTickets: 1, // free 1-use tickets (starter gift + 1 per NEW monster pulled from a pack)
+  monsterPassActive: false,
+  monsterPassSource: '',
+  lastNewMonsterId: '',
+
+  // Secret Developer/Admin Mode (unlocked via 'ezwin' code in Settings)
+  admin: {
+    unlocked: false,
+    enabled: false,
+    infiniteMoney: false,
+    unlockAll: false,
+    godMode: false,
+    speedBoost: false,
+    noCooldowns: false,
+    forceRole: 'random', // 'random' | 'monster' | 'survivor'
   },
 };
+
+export const MONSTER_PASS_COIN_COST = 150;
 
 function todayKey() {
   const d = new Date();
@@ -102,7 +130,12 @@ export class ProfileStore {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) {
         const fresh = structuredClone(DEFAULT_STATE);
+        fresh.playerId = generatePlayerId();
         fresh.playerName = generateRandomNickname();
+        if (isChristmasEventActive()) {
+          fresh.packs.xmas_pack = 1;
+          fresh.xmasGiftGranted = true;
+        }
         return fresh;
       }
       const parsed = JSON.parse(raw);
@@ -114,14 +147,26 @@ export class ProfileStore {
         stats: { ...DEFAULT_STATE.stats, ...(parsed.stats || {}) },
         settings: { ...DEFAULT_STATE.settings, ...(parsed.settings || {}) },
         ranked: { ...DEFAULT_STATE.ranked, ...(parsed.ranked || {}) },
+        admin: { ...DEFAULT_STATE.admin, ...(parsed.admin || {}) },
       };
-      delete merged.admin;
+      if (!['auto', 'high', 'low'].includes(merged.settings.graphicsQuality)) merged.settings.graphicsQuality = 'auto';
+      // One-time seamless Holiday Welcome Gift (active through Jan 1): grant 1 free Christmas Gift Pack!
+      if (isChristmasEventActive() && !parsed.xmasGiftGranted) {
+        merged.packs.xmas_pack = (merged.packs.xmas_pack || 0) + 1;
+        merged.xmasGiftGranted = true;
+      }
+      merged.monsterTickets = Math.max(0, Math.floor(Number(merged.monsterTickets) || 0));
+      merged.monsterPassActive = Boolean(merged.monsterPassActive);
+      if (!merged.playerId) {
+        merged.playerId = generatePlayerId();
+      }
       if (!merged.playerName || merged.playerName === 'Player') {
         merged.playerName = generateRandomNickname();
       }
       return merged;
     } catch {
       const fresh = structuredClone(DEFAULT_STATE);
+      fresh.playerId = generatePlayerId();
       fresh.playerName = generateRandomNickname();
       return fresh;
     }
@@ -185,18 +230,41 @@ export class ProfileStore {
   }
 
   /**
-   * Simple & clear Ranked RR calculation: Win = RR UP, Loss = RR DOWN!
+   * Participation-weighted & Rank-scaled Ranked RR calculation:
+   * - Higher participation (movement, hits, eliminations, abilities, chases, survival) earns more RR on win & softens losses.
+   * - Low participation / AFK wins earn noticeably less RR.
+   * - Higher Rank Tiers smoothly reduce RR gain per win so climbing from Bronze -> Master feels earned!
    */
-  applyRankedMatch(won, performanceBonus = 0) {
+  applyRankedMatch(won, metrics = {}) {
     if (!this.state.ranked) this.state.ranked = { rr: 0, peakRR: 0, wins: 0, played: 0 };
     const oldRR = this.state.ranked.rr || 0;
     const oldRank = getRankInfo(oldRR);
 
-    const deltaRR = won
-      ? 32 + Math.min(12, Math.round(performanceBonus))
-      : -(20 - Math.min(5, Math.round(performanceBonus * 0.5)));
+    // Support both new metrics object ({ participation }) and legacy numeric perfBonus gracefully
+    let participation = 0.55;
+    if (typeof metrics === 'number') {
+      participation = Math.max(0.05, Math.min(1.0, 0.25 + metrics * 0.06));
+    } else if (metrics && typeof metrics.participation === 'number') {
+      participation = Math.max(0.05, Math.min(1.0, metrics.participation));
+    }
 
-    const newRR = Math.max(0, oldRR + deltaRR);
+    // Smooth diminishing gain curve as player climbs higher in rank (Bronze 1.0x -> Gold ~0.85x -> Diamond ~0.69x -> Master ~0.54x -> Master 3+ 0.42x)
+    const rankProgress = Math.min(1.25, oldRR / 1800);
+    const rankGainScale = Math.max(0.42, 1.0 - rankProgress * 0.46);
+
+    let rawDelta;
+    if (won) {
+      // Base win RR scales strongly with participation: 14 (minimal) -> 42 (100% MVP), then scaled down by rank!
+      const participationBase = 14 + participation * 28;
+      rawDelta = Math.max(5, Math.round(participationBase * rankGainScale));
+    } else {
+      // Higher ranks risk slightly more RR on loss, while high participation mitigates up to 7 RR!
+      const baseLoss = 14 + rankProgress * 10;
+      const mitigation = participation * 7;
+      rawDelta = -Math.max(6, Math.round(baseLoss - mitigation));
+    }
+
+    const newRR = Math.max(0, oldRR + rawDelta);
     this.state.ranked.rr = newRR;
     this.state.ranked.peakRR = Math.max(this.state.ranked.peakRR || 0, newRR);
     this.state.ranked.played = (this.state.ranked.played || 0) + 1;
@@ -204,12 +272,22 @@ export class ProfileStore {
     this._save();
 
     const newRank = getRankInfo(newRR);
+    const participationPct = Math.round(participation * 100);
+    const activityLabel =
+      participationPct >= 85 ? 'MVP' :
+      participationPct >= 65 ? 'HIGH' :
+      participationPct >= 40 ? 'GOOD' :
+      'LOW';
+
     return {
       oldRR,
       newRR,
       deltaRR: newRR - oldRR,
       oldRank,
       newRank,
+      participation,
+      participationPct,
+      activityLabel,
       promoted: newRank.divIdx > oldRank.divIdx,
       demoted: newRank.divIdx < oldRank.divIdx,
     };
@@ -265,19 +343,90 @@ export class ProfileStore {
 
   getTotalPackCount() {
     const p = this.state.packs;
-    return (p.slime_pack || 0) + (p.super_pack || 0) + (p.neon_pack || 0) + (p.legendary_pack || 0);
+    return (p.xmas_pack || 0) + (p.slime_pack || 0) + (p.super_pack || 0) + (p.neon_pack || 0) + (p.legendary_pack || 0);
+  }
+
+  isAdminUnlocked() {
+    return Boolean(this.state.admin?.unlocked);
   }
 
   isAdminActive() {
-    return false;
+    return Boolean(this.state.admin?.unlocked && this.state.admin?.enabled);
   }
 
   hasInfiniteMoney() {
-    return false;
+    return Boolean(this.isAdminActive() && this.state.admin.infiniteMoney);
   }
 
   hasUnlockAll() {
-    return false;
+    return Boolean(this.isAdminActive() && this.state.admin.unlockAll);
+  }
+
+  getAdminConfig() {
+    const a = this.state.admin || DEFAULT_STATE.admin;
+    const active = Boolean(a.unlocked && a.enabled);
+    return {
+      unlocked: Boolean(a.unlocked),
+      enabled: Boolean(a.enabled),
+      active,
+      infiniteMoney: active && Boolean(a.infiniteMoney),
+      unlockAll: active && Boolean(a.unlockAll),
+      godMode: active && Boolean(a.godMode),
+      speedBoost: active && Boolean(a.speedBoost),
+      noCooldowns: active && Boolean(a.noCooldowns),
+      forceRole: active ? a.forceRole || 'random' : 'random',
+    };
+  }
+
+  redeemCode(rawCode) {
+    const code = String(rawCode || '').trim().toLowerCase();
+    if (!code) return { ok: false, message: 'ENTER A CODE FIRST' };
+    if (code === 'ezwin') {
+      if (!this.state.admin) this.state.admin = structuredClone(DEFAULT_STATE.admin);
+      this.state.admin.unlocked = true;
+      this.state.admin.enabled = true;
+      this._save();
+      return { ok: true, isAdmin: true, message: 'ACCESS GRANTED — ADMIN.EXE UNLOCKED!' };
+    }
+    return { ok: false, message: 'INVALID CODE' };
+  }
+
+  toggleAdminMaster(enabled) {
+    if (!this.state.admin?.unlocked) return false;
+    this.state.admin.enabled = Boolean(enabled);
+    if (!this.state.admin.enabled) this._sanitizeEquipped();
+    this._save();
+    return true;
+  }
+
+  setAdminOption(key, value) {
+    if (!this.state.admin?.unlocked) return false;
+    const allowed = ['infiniteMoney', 'unlockAll', 'godMode', 'speedBoost', 'noCooldowns', 'forceRole'];
+    if (!allowed.includes(key)) return false;
+    this.state.admin[key] = value;
+    if (key === 'unlockAll' && !value) this._sanitizeEquipped();
+    this._save();
+    return true;
+  }
+
+  adminAddPacks(count = 3) {
+    if (!this.isAdminActive()) return false;
+    const n = Math.max(1, Math.floor(count));
+    for (const k of ['xmas_pack', 'slime_pack', 'super_pack', 'neon_pack', 'legendary_pack']) {
+      this.state.packs[k] = (this.state.packs[k] || 0) + n;
+    }
+    this._save();
+    return true;
+  }
+
+  adminAddRR(delta = 100) {
+    if (!this.isAdminActive()) return false;
+    if (!this.state.ranked) this.state.ranked = { rr: 0, peakRR: 0, wins: 0, played: 0 };
+    const next = Math.max(0, (this.state.ranked.rr || 0) + Math.round(delta));
+    this.state.ranked.rr = next;
+    this.state.ranked.peakRR = Math.max(this.state.ranked.peakRR || 0, next);
+    this._save();
+    return next;
   }
 
   getEffectiveCoins() {
@@ -429,12 +578,18 @@ export class ProfileStore {
     };
 
     const cards = [];
+    const holidayIds = new Set(['frostyClaus', 'candyCane', 'santaHat', 'xmasBells', 'frostgun', 'frost', 'frostnova', 'frosty', 'freezer']);
+    const holidayPool = pool.filter((p) => holidayIds.has(p.id));
     for (let i = 0; i < pack.cards; i++) {
       let chosen;
       if (options.guaranteedNewMonster && i === pack.cards - 1) {
         const lockedMonsters = monsterPool.filter((m) => !this.state.unlockedMonsters.includes(m.id));
         const mSource = lockedMonsters.length > 0 ? lockedMonsters : monsterPool;
         chosen = mSource[Math.floor(Math.random() * mSource.length)];
+      } else if (pack.isHoliday && i === pack.cards - 1 && holidayPool.length > 0 && Math.random() < 0.72) {
+        const unownedHol = holidayPool.filter((p) => !this.isOwned(p.category, p.id));
+        const hSource = unownedHol.length > 0 ? unownedHol : holidayPool;
+        chosen = hSource[Math.floor(Math.random() * hSource.length)];
       } else {
         const rKey = pickRarity(i === pack.cards - 1);
         let rPool = pool.filter((p) => p.rarity === rKey);
@@ -446,6 +601,11 @@ export class ProfileStore {
 
       const rar = RARITIES[chosen.rarity];
       const isNew = this._grantItem(chosen.category, chosen.id);
+      if (isNew && chosen.category === 'monster') {
+        // "Play what you just pulled": every NEW monster comes with a free Monster Pass ticket.
+        this.state.monsterTickets = (this.state.monsterTickets || 0) + 1;
+        this.state.lastNewMonsterId = chosen.id;
+      }
       let dupUid = null;
       if (!isNew) {
         dupUid = 'dup_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
@@ -597,6 +757,54 @@ export class ProfileStore {
     this.state.stats.coopActions += coopActions;
     this.state.coins += coinsEarned;
     this._save();
+  }
+
+  /* ---------------- MONSTER PASS ---------------- */
+
+  hasMonsterPass() {
+    return Boolean(this.state.monsterPassActive);
+  }
+
+  /**
+   * Activate the pass for the next match.
+   * source: 'ad' (rewarded ad completed) | 'ticket' (free 1-use ticket) | 'coins' | 'test' (local fallback)
+   * Returns { ok, reason }.
+   */
+  activateMonsterPass(source) {
+    if (this.state.monsterPassActive) return { ok: false, reason: 'already' };
+    if (source === 'ticket') {
+      if ((this.state.monsterTickets || 0) <= 0) return { ok: false, reason: 'no_ticket' };
+      this.state.monsterTickets -= 1;
+    } else if (source === 'coins') {
+      if (!this.hasInfiniteMoney()) {
+        if (this.state.coins < MONSTER_PASS_COIN_COST) return { ok: false, reason: 'no_coins' };
+        this.state.coins -= MONSTER_PASS_COIN_COST;
+      }
+    } else if (source !== 'ad' && source !== 'test') {
+      return { ok: false, reason: 'bad_source' };
+    }
+    this.state.monsterPassActive = true;
+    this.state.monsterPassSource = source;
+    this._save();
+    return { ok: true };
+  }
+
+  /** Called once the guaranteed-monster match actually starts. */
+  consumeMonsterPass() {
+    if (!this.state.monsterPassActive) return false;
+    this.state.monsterPassActive = false;
+    this.state.monsterPassSource = '';
+    this._save();
+    return true;
+  }
+
+  /** Rewarded "2X COINS" on the results screen: grants the match coins a second time. */
+  grantBonusCoins(amount) {
+    const n = Math.max(0, Math.floor(amount || 0));
+    if (!n) return 0;
+    this.state.coins += n;
+    this._save();
+    return n;
   }
 
   updateSetting(key, value) { this.state.settings[key] = value; this._save(); }

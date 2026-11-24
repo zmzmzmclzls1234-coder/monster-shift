@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from '../../vendor/three.module.min.js';
 
 function makeCanvas(size = 256) {
   const c = document.createElement('canvas');

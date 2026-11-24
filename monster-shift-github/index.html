@@ -98,14 +98,7 @@
       45% { transform: translateY(-20px) scale(0.92, 1.12); }
     }
   </style>
-
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "./vendor/three.module.min.js"
-    }
-  }
-  </script>
+  <link rel="modulepreload" href="./vendor/three.module.min.js" />
 </head>
 <body>
   <!-- INSTANT 0ms CARTOON LOADING SCREEN -->
@@ -168,6 +161,7 @@
         status.onclick = function () { location.reload(); };
       }
     };
+    window.MONSTER_SHIFT_WS_URL = 'wss://monster-shift.onrender.com/ws';
     window.addEventListener('error', function (e) {
       if (!document.getElementById('boot-loader')?.dataset.done) {
         window.__showBootError(e.message || 'Script failed');
@@ -207,6 +201,7 @@
         <div class="brand-cluster">
           <div class="brand-badge">
             <span class="brand-title">MONSTER SHIFT</span>
+            <span id="lobby-xmas-pill" class="xmas-badge-pill">❄ XMAS ~JAN 1</span>
           </div>
           <div id="lobby-rank-pill" class="status-pill rank-topbar-pill" title="View Ranking Board">
             <span id="lobby-rank-emblem"></span>
@@ -370,6 +365,7 @@
         <div id="results-stats" class="results-stats"></div>
         <div id="results-rank-box" class="results-rank-box hidden"></div>
         <div id="results-match-prog" class="results-match-prog"></div>
+        <button id="btn-results-double" class="dbl-coins-btn hidden" type="button"></button>
         <div class="results-actions">
           <button id="btn-results-lobby" class="dock-btn btn-sky" type="button">LOBBY</button>
           <button id="btn-results-again" class="dock-btn btn-play" type="button">PLAY AGAIN</button>

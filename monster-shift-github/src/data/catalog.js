@@ -25,6 +25,7 @@ export const MONSTERS = [
   { id: 'jellyking', name: 'Jelly King', rarity: 'legendary', starter: false, abilityName: 'Royal Swarm', abilityDesc: 'Launches a chasing jelly boom-bot & golden shock ring!', bodyColor: '#ff8c1a', bellyColor: '#fff0a6', spotColor: '#cc5200', cheekColor: '#ff5277', accentColor: '#ffe047', silhouette: 'gloop', speed: 7.3, cooldown: 4.9, range: 6.8 },
   { id: 'prism', name: 'Prism', rarity: 'legendary', starter: false, abilityName: 'Rainbow Beam', abilityDesc: 'Fires a dazzling multi-color beam that slows & stuns in a line.', bodyColor: '#ff5cf4', bellyColor: '#e0f7ff', spotColor: '#8d3bff', cheekColor: '#ffe047', accentColor: '#50f5ff', silhouette: 'frosty', speed: 7.38, cooldown: 4.6, range: 9.0 },
   { id: 'quasar', name: 'Quasar', rarity: 'mythic', starter: false, abilityName: 'Nova Warp', abilityDesc: 'Blinks forward AND pulls nearby survivors into a star burst!', bodyColor: '#ff3d2e', bellyColor: '#ffe073', spotColor: '#5a1aff', cheekColor: '#50f5ff', accentColor: '#ffaa00', silhouette: 'wisp', speed: 7.45, cooldown: 6.4, range: 8.2 },
+  { id: 'frostyClaus', name: 'Frosty Claus', rarity: 'legendary', starter: false, holiday: true, abilityName: 'Gift Blizzard', abilityDesc: 'Drops a festive snow-frost zone & bursts forward with holiday speed!', bodyColor: '#e62e42', bellyColor: '#fffdf7', spotColor: '#1eb854', cheekColor: '#ff8da6', accentColor: '#ffe047', silhouette: 'frosty', speed: 7.36, cooldown: 4.5, range: 6.4 },
 ];
 
 // 20 UNIQUE PLAYABLE SURVIVORS (Balanced cooldowns & smooth speeds)
@@ -68,6 +69,7 @@ export const SKINS = [
   { id: 'galaxy', name: 'Galaxy Star', rarity: 'legendary', starter: false, perkLabel: '+24% Range', perkDesc: '24% wider ability range & faster Star Beacon repair!', swatch: '#7052ff', overrideBody: '#6242ff', overrideAccent: '#ffe052', metalness: 0.28, emissive: '#211559', perk: { rangeMult: 1.24, repairMult: 1.3 } },
   { id: 'royalgold', name: 'Royal Gold', rarity: 'legendary', starter: false, perkLabel: '+30% Coins+Shield', perkDesc: '+30% match Coins AND starts match with shield/speed!', swatch: '#ffbe1a', overrideBody: '#ffbb00', overrideAccent: '#fff4a3', metalness: 0.58, emissive: '#4d3000', perk: { coinMult: 1.3, speedMult: 1.05, startShield: 4.5 } },
   { id: 'inferno', name: 'Mythic Inferno', rarity: 'mythic', starter: false, perkLabel: 'APEX POWER', perkDesc: '+10% Speed, -15% Ability CD & +35% Match Coins!', swatch: '#ff3b00', overrideBody: '#ff3300', overrideAccent: '#ffea59', metalness: 0.42, emissive: '#751500', perk: { speedMult: 1.1, abilityCdMult: 0.85, coinMult: 1.35, powerMult: 1.15 } },
+  { id: 'candyCane', name: 'Candy Cane', rarity: 'epic', starter: false, holiday: true, perkLabel: '❄ +25% Coins', perkDesc: 'Festive peppermint gloss! +25% Coins & +5% Speed!', swatch: '#ff2b4a', overrideBody: '#ff3352', overrideAccent: '#ffffff', metalness: 0.18, emissive: '#4d0815', perk: { coinMult: 1.25, speedMult: 1.05 } },
 ];
 
 // 12 COLLECTIBLE BALANCED CARTOON WEAPONS (Equip 1 at a time!)
@@ -117,6 +119,7 @@ export const HATS = [
   { id: 'halo', name: 'Star Halo', rarity: 'legendary', starter: false, tagline: 'Floating golden star ring', price: 420, color: '#38cfff', icon: 'halo' },
   { id: 'sweetPotatoHeadless', name: 'Sweet Potato Headless', rarity: 'legendary', starter: false, tagline: 'LEGENDARY! Headless with floating roasted sweet potato!', price: 460, color: '#9e2b6b', icon: 'sweetPotato' },
   { id: 'dragonCrown', name: 'Mythic Horns', rarity: 'mythic', starter: false, tagline: 'Blazing orange dragon crown!', price: 580, color: '#ff4d00', icon: 'dragonCrown' },
+  { id: 'santaHat', name: 'Santa Hat', rarity: 'rare', starter: false, holiday: true, tagline: '❄ Festive 3D plush red Santa hat & snowy pom!', price: 220, color: '#e62639', icon: 'party' },
 ];
 
 // 8 REAL 3D AURAS (ORBITING 3D RINGS, ORBS, HEARTS, FLAMES & CRYSTALS!)
@@ -129,6 +132,7 @@ export const AURAS = [
   { id: 'lightning', name: 'Volt Orbit', rarity: 'epic', starter: false, tagline: 'Crackling yellow-cyan electric ring', price: 360, color: '#ffe047', icon: 'bolt' },
   { id: 'galaxyring', name: 'Cosmic Saturn', rarity: 'legendary', starter: false, tagline: 'Tilted starry cosmic planet rings', price: 460, color: '#7d52ff', icon: 'starlight' },
   { id: 'mythicflame', name: 'Mythic Inferno', rarity: 'mythic', starter: false, tagline: 'Dual blazing orange-red flame orbits!', price: 620, color: '#ff3b00', icon: 'flame' },
+  { id: 'xmasBells', name: 'Holiday Ornaments', rarity: 'epic', starter: false, holiday: true, tagline: '❄ Orbiting festive red, green & gold holiday ornaments!', price: 320, color: '#e62e42', icon: 'snowflake' },
 ];
 
 // 8 PARTICLE TRAILS
@@ -144,6 +148,7 @@ export const TRAILS = [
 ];
 
 export const PACK_TYPES = [
+  { id: 'xmas_pack', name: 'Christmas Gift Pack', tagline: '❄ Until Jan 1 · 3 drops with boosted Xmas & Frost gear!', price: 260, colorA: '#e8233a', colorB: '#0f8c44', accent: '#ffe047', cards: 3, minGuaranteed: 'uncommon', rarityBoost: 1.5, isHoliday: true },
   { id: 'slime_pack', name: 'Slime Emerald Pack', tagline: '3 drops · Standard odds for Chars, Weapons & Gear', price: 150, colorA: '#32eb6d', colorB: '#0c943e', accent: '#c4ff70', cards: 3, minGuaranteed: 'common', rarityBoost: 0.82 },
   { id: 'super_pack', name: 'Solar Blaze Pack', tagline: '3 drops · Guaranteed Uncommon+ & better Rare odds', price: 290, colorA: '#ffa61a', colorB: '#ff4400', accent: '#fff078', cards: 3, minGuaranteed: 'uncommon', rarityBoost: 1.25 },
   { id: 'neon_pack', name: 'Hyper Neon Pack', tagline: '3 drops · Guaranteed Rare+ & boosted Epic odds', price: 420, colorA: '#1ce8ff', colorB: '#7a29ff', accent: '#ff5ef4', cards: 3, minGuaranteed: 'rare', rarityBoost: 1.65 },
@@ -228,6 +233,19 @@ export function getSkinById(id) { return SKINS.find((s) => s.id === id) || SKINS
 export function getWeaponById(id) { return WEAPONS.find((w) => w.id === id) || WEAPONS[0]; }
 export function getMapById(id) { return MAPS.find((m) => m.id === id) || MAPS[0]; }
 export function getPackById(id) { return PACK_TYPES.find((p) => p.id === id) || PACK_TYPES[0]; }
+
+/**
+ * Seamless Christmas Event window: active Nov 20 through Jan 1 (inclusive, local time).
+ * Automatically turns off on Jan 2 while keeping all unlocked holiday collectibles forever!
+ */
+export function isChristmasEventActive(now = new Date()) {
+  const m = now.getMonth() + 1; // 1..12
+  const d = now.getDate();      // 1..31
+  if (m === 11 && d >= 20) return true;
+  if (m === 12) return true;
+  if (m === 1 && d === 1) return true;
+  return false;
+}
 export function getGrowthStage(stageNum) {
   return GROWTH_STAGES[Math.max(0, Math.min(GROWTH_STAGES.length - 1, stageNum - 1))];
 }

@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from '../../vendor/three.module.min.js';
 import { createMonsterRig, createSurvivorRig } from '../models/CharacterFactory.js';
 import { getMonsterById, getSurvivorById } from '../data/catalog.js';
 
@@ -26,7 +26,7 @@ export class IntroSequence {
     this.phase = 'idle';
     this.phaseTime = 0;
     this.pokeCount = 0;
-    this.maxPokes = 1;
+    this.maxPokes = 3;
 
     this.slime = null;
     this.tinySurvivor = null;
@@ -37,7 +37,7 @@ export class IntroSequence {
     this.pointerWorld = new THREE.Vector3(0, 1, 2);
   }
 
-  start(monsterId = 'gloop', hatId = 'none') {
+  start(monsterId = 'gloop', hatId = 'none', skinId = 'classic', auraId = 'none') {
     this.stop();
     this.active = true;
     this.phase = 'drop';
@@ -49,7 +49,7 @@ export class IntroSequence {
     this.sceneManager.cameraRig.setMode('intro', true);
 
     const spec = getMonsterById(monsterId);
-    this.slime = createMonsterRig(spec, hatId);
+    this.slime = createMonsterRig(spec, hatId, skinId, auraId);
     this.slime.indicatorRing.visible = false;
     this.slime.setGrowthStage(1, false);
     this.slime.currentScale = 1.0;
@@ -114,9 +114,16 @@ export class IntroSequence {
         duration: 0.36,
       });
 
+      const nextPrompt =
+        this.pokeCount === 1
+          ? 'SQUISH! TAP AGAIN!'
+          : this.pokeCount < this.maxPokes
+          ? 'ONE MORE TAP!'
+          : 'OH! WHO IS THAT?!';
+
       this.onUiUpdate({
         visible: true,
-        prompt: this.pokeCount < this.maxPokes ? 'SQUISH! TAP AGAIN!' : 'OH! WHO IS THAT?!',
+        prompt: nextPrompt,
         pokes: this.pokeCount,
         showPokes: true,
         showLogo: false,
@@ -156,8 +163,15 @@ export class IntroSequence {
     this.leapStart.copy(this.slime.root.position);
     this.leapTarget.copy(this.tinySurvivor.root.position);
     this.slime.setExpression('chomp');
-    this.slime.triggerAttackStretch(1.55);
+    this.slime.triggerAttackStretch(1.65);
     this.sound.playLunge();
+    this.onUiUpdate({
+      visible: true,
+      prompt: 'CHOMP!!',
+      pokes: this.maxPokes,
+      showPokes: false,
+      showLogo: false,
+    });
   }
 
   _enterGrowPhase() {
@@ -242,7 +256,7 @@ export class IntroSequence {
       }
       this.slime.update(dt, 0);
 
-      if (this.phaseTime >= 4.6) {
+      if (this.phaseTime >= 5.5) {
         this._enterCatchPhase();
       }
     } else if (this.phase === 'stalk') {
@@ -264,15 +278,23 @@ export class IntroSequence {
 
       if (this.phaseTime >= 1.12) this._enterLeapPhase();
     } else if (this.phase === 'leap') {
-      const dur = 0.46;
+      const dur = 0.5;
       const t = Math.min(1, this.phaseTime / dur);
       const ease = t * t * (3 - 2 * t);
       this.slime.root.position.x = THREE.MathUtils.lerp(this.leapStart.x, this.leapTarget.x, ease);
       this.slime.root.position.z = THREE.MathUtils.lerp(this.leapStart.z, this.leapTarget.z, ease);
-      this.slime.root.position.y = 0.24 + Math.sin(t * Math.PI) * 2.5;
+      this.slime.root.position.y = 0.24 + Math.sin(t * Math.PI) * 2.55;
       this.slime.update(dt, 6);
 
-      if (this.tinySurvivor) this.tinySurvivor.update(dt, 5, true);
+      if (this.tinySurvivor) {
+        // Pull & swallow the tiny player visibly into the Slime's chomp as it lands!
+        if (t > 0.68) {
+          const swallowT = Math.min(1, (t - 0.68) / 0.32);
+          this.tinySurvivor.root.scale.setScalar(0.72 * (1 - swallowT * 0.85));
+          this.tinySurvivor.root.position.y = 0.12 + swallowT * 0.55;
+        }
+        this.tinySurvivor.update(dt, 5, true);
+      }
 
       if (t >= 1) {
         this.slime.root.position.y = 0.24;

@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from '../../vendor/three.module.min.js';
 import { renderIcon } from './CartoonIcons.js';
 import { applyToonOutlines } from '../engine/ToonOutline.js';
 import { crazyGames } from '../engine/CrazyGamesBridge.js';
@@ -84,6 +84,80 @@ export class PackOpener {
     this._gl = null;
   }
 
+  _makeGlowTexture(hexColor = '#ffe047') {
+    const c = document.createElement('canvas');
+    c.width = 256;
+    c.height = 256;
+    const ctx = c.getContext('2d');
+
+    // Smooth radial energy bloom
+    const rg = ctx.createRadialGradient(128, 128, 4, 128, 128, 124);
+    rg.addColorStop(0, 'rgba(255, 255, 255, 1)');
+    rg.addColorStop(0.22, hexColor);
+    rg.addColorStop(0.55, hexColor + '66');
+    rg.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = rg;
+    ctx.fillRect(0, 0, 256, 256);
+
+    // Soft 4-point star flare cross
+    ctx.save();
+    ctx.translate(128, 128);
+    for (let i = 0; i < 2; i++) {
+      ctx.rotate((i * Math.PI) / 2);
+      const lg = ctx.createLinearGradient(-118, 0, 118, 0);
+      lg.addColorStop(0, 'rgba(255,255,255,0)');
+      lg.addColorStop(0.5, 'rgba(255,255,255,0.92)');
+      lg.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = lg;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 118, 9, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  _renderCardBackCrest(rarity, idx = 0) {
+    const isMythic = rarity === 'mythic';
+    const isLeg = rarity === 'legendary';
+    const isEpic = rarity === 'epic';
+    const primary = isMythic ? '#ff4a24' : isLeg ? '#ffbe1a' : isEpic ? '#c45cff' : '#4ce880';
+    const light = isMythic ? '#fff08a' : isLeg ? '#fff7b2' : isEpic ? '#f3b8ff' : '#c6ffd9';
+    const accent = isMythic ? '#ffcf33' : isLeg ? '#ff7b1c' : isEpic ? '#4de8ff' : '#ffe047';
+    const gid = `cbG_${rarity}_${idx}`;
+
+    return `
+      <svg class="cb-crest-svg" viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <radialGradient id="${gid}" cx="38%" cy="28%" r="72%">
+            <stop offset="0%" stop-color="${light}"/>
+            <stop offset="55%" stop-color="${primary}"/>
+            <stop offset="100%" stop-color="#18213d"/>
+          </radialGradient>
+        </defs>
+        ${
+          isMythic || isLeg
+            ? `<path d="M22 30L33 14L48 25L63 14L74 30L67 37H29L22 30Z" fill="${accent}" stroke="#14192B" stroke-width="4.5" stroke-linejoin="round"/>`
+            : `<path d="M48 11L53 23L65 25L55 33L58 45L48 38L38 45L41 33L31 25L43 23L48 11Z" fill="${accent}" stroke="#14192B" stroke-width="3.8" stroke-linejoin="round"/>`
+        }
+        <path d="M18 67C18 42 30 28 48 28C66 28 78 42 78 67C78 78 66 84 48 84C30 84 18 78 18 67Z" fill="url(#${gid})" stroke="#14192B" stroke-width="5"/>
+        <ellipse cx="36" cy="42" rx="8" ry="4.5" transform="rotate(-24 36 42)" fill="#FFFFFF" opacity="0.65"/>
+        <circle cx="37" cy="56" r="7.5" fill="#FFFFFF" stroke="#14192B" stroke-width="3.8"/>
+        <circle cx="59" cy="56" r="7.5" fill="#FFFFFF" stroke="#14192B" stroke-width="3.8"/>
+        <circle cx="38.5" cy="56" r="3.6" fill="#14192B"/>
+        <circle cx="60.5" cy="56" r="3.6" fill="#14192B"/>
+        <circle cx="40" cy="54" r="1.5" fill="#FFFFFF"/>
+        <circle cx="62" cy="54" r="1.5" fill="#FFFFFF"/>
+        <path d="M41 68Q48 74 55 68" stroke="#14192B" stroke-width="4" stroke-linecap="round" fill="none"/>
+        <path d="M13 42L16 36L19 42L25 45L19 48L16 54L13 48L7 45Z" fill="#FFFDF6" opacity="0.9"/>
+        <path d="M80 28L82 23L84 28L89 30L84 32L82 37L80 32L75 30Z" fill="#FFE047" opacity="0.95"/>
+      </svg>
+    `;
+  }
+
   _build3DPackScene(canvas, pack, glowCol) {
     const w = Math.max(260, Math.min(440, Math.round(window.innerWidth * 0.62)));
     const h = Math.max(220, Math.min(340, Math.round(window.innerHeight * 0.56)));
@@ -121,16 +195,26 @@ export class PackOpener {
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, 256, 384);
 
-    // Diagonal glossy cartoon stripes
-    ctx.fillStyle = 'rgba(255,255,255,0.16)';
-    for (let i = -2; i < 6; i++) {
-      ctx.beginPath();
-      ctx.moveTo(i * 74, 0);
-      ctx.lineTo(i * 74 + 34, 0);
-      ctx.lineTo(i * 74 - 70, 384);
-      ctx.lineTo(i * 74 - 104, 384);
-      ctx.closePath();
-      ctx.fill();
+    // Diagonal glossy cartoon stripes (or crossed golden Christmas gift ribbons for Holiday Pack!)
+    if (pack.isHoliday) {
+      ctx.fillStyle = '#ffe047';
+      ctx.fillRect(108, 0, 40, 384);
+      ctx.fillRect(0, 176, 256, 40);
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = '#14192b';
+      ctx.strokeRect(108, -6, 40, 396);
+      ctx.strokeRect(-6, 176, 268, 40);
+    } else {
+      ctx.fillStyle = 'rgba(255,255,255,0.16)';
+      for (let i = -2; i < 6; i++) {
+        ctx.beginPath();
+        ctx.moveTo(i * 74, 0);
+        ctx.lineTo(i * 74 + 34, 0);
+        ctx.lineTo(i * 74 - 70, 384);
+        ctx.lineTo(i * 74 - 104, 384);
+        ctx.closePath();
+        ctx.fill();
+      }
     }
     // Bold emblem badge in center
     ctx.fillStyle = pack.accent || '#ffe047';
@@ -196,21 +280,73 @@ export class PackOpener {
     botCrimp.position.y = -1.48;
     packGroup.add(botCrimp);
 
-    // Glowing inner beam that expands as the pack tears open!
-    const innerGlowMat = new THREE.MeshBasicMaterial({
-      color: glowCol,
+    // Soft additive radial light-bloom + 4-point star flare (NO ugly flat cone/triangle!)
+    const bloomTex = this._makeGlowTexture(glowCol);
+    const bloomMat = new THREE.SpriteMaterial({
+      map: bloomTex,
       transparent: true,
       opacity: 0.0,
-      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
     });
-    const innerBeam = new THREE.Mesh(new THREE.ConeGeometry(1.5, 3.6, 18, 1, true), innerGlowMat);
-    innerBeam.rotation.x = Math.PI;
-    innerBeam.position.set(0, 2.35, 0);
-    packGroup.add(innerBeam);
+    const bloomSprite = new THREE.Sprite(bloomMat);
+    bloomSprite.position.set(0, 1.05, 0.25);
+    bloomSprite.scale.set(0.8, 0.8, 1);
+    packGroup.add(bloomSprite);
+
+    // Dual glowing 3D energy shockwave rings that expand smoothly when the pack rips open!
+    const burstRings = [];
+    const ringColors = [glowCol, pack.accent || '#ffe047'];
+    for (let i = 0; i < 2; i++) {
+      const rMat = new THREE.MeshBasicMaterial({
+        color: ringColors[i],
+        transparent: true,
+        opacity: 0,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.95, 0.055, 12, 42), rMat);
+      ring.position.set(0, 0.85, 0.1);
+      ring.rotation.set(i === 0 ? Math.PI * 0.44 : Math.PI * 0.28, i === 0 ? 0.18 : -0.35, 0);
+      ring.visible = false;
+      scene.add(ring);
+      burstRings.push({ mesh: ring, mat: rMat, delay: i * 0.08 });
+    }
+
+    // 18 glossy 3D burst orbs & star crystals that fountain out of the ripped pack!
+    const cardColors = this.activeResult.cards.map((c) => c.raritySpec.color);
+    const burstPalette = [...cardColors, pack.accent || '#ffe047', '#ffffff'];
+    const burstOrbs = [];
+    const orbSphereGeo = new THREE.SphereGeometry(0.11, 12, 10);
+    const orbStarGeo = new THREE.OctahedronGeometry(0.12, 0);
+    for (let i = 0; i < 18; i++) {
+      const col = burstPalette[i % burstPalette.length];
+      const mat = new THREE.MeshStandardMaterial({
+        color: col,
+        emissive: col,
+        emissiveIntensity: 0.85,
+        roughness: 0.15,
+        transparent: true,
+        opacity: 1,
+      });
+      const mesh = new THREE.Mesh(i % 3 === 0 ? orbStarGeo : orbSphereGeo, mat);
+      const angle = (i / 18) * Math.PI * 2 + (Math.random() - 0.5) * 0.25;
+      const spread = 1.6 + Math.random() * 2.1;
+      mesh.userData = {
+        vx: Math.cos(angle) * spread,
+        vy: 2.8 + Math.random() * 2.6,
+        vz: Math.sin(angle) * 1.15,
+        spin: 0.1 + Math.random() * 0.14,
+        baseScale: 0.72 + Math.random() * 0.65,
+      };
+      mesh.position.set(0, 0.95, 0.1);
+      mesh.visible = false;
+      scene.add(mesh);
+      burstOrbs.push(mesh);
+    }
 
     // 3 Glowing mini 3D cards peeking out once torn!
     const miniCards = [];
-    const cardColors = this.activeResult.cards.map((c) => c.raritySpec.color);
     for (let i = 0; i < 3; i++) {
       const cm = new THREE.Mesh(
         new THREE.BoxGeometry(0.68, 0.96, 0.08),
@@ -245,10 +381,15 @@ export class PackOpener {
     applyToonOutlines(bodyMesh, 1.055);
     applyToonOutlines(tearStrip, 1.07);
 
-    // Floating energy sparkles around high-tier packs
+    // Floating glossy energy orbs orbiting the sealed pack
     const sparks = new THREE.Group();
-    const sparkGeo = new THREE.OctahedronGeometry(0.11, 0);
-    const sparkMat = new THREE.MeshBasicMaterial({ color: pack.accent || '#ffe047' });
+    const sparkGeo = new THREE.SphereGeometry(0.095, 12, 10);
+    const sparkMat = new THREE.MeshStandardMaterial({
+      color: pack.accent || '#ffe047',
+      emissive: pack.accent || '#ffe047',
+      emissiveIntensity: 0.75,
+      roughness: 0.18,
+    });
     for (let i = 0; i < 8; i++) {
       const sp = new THREE.Mesh(sparkGeo, sparkMat);
       const a = (i / 8) * Math.PI * 2;
@@ -259,7 +400,20 @@ export class PackOpener {
     }
     scene.add(sparks);
 
-    this._gl = { renderer, scene, camera, packGroup, tearPivot, innerBeam, innerGlowMat, miniCards, sparks, time: 0 };
+    this._gl = {
+      renderer,
+      scene,
+      camera,
+      packGroup,
+      tearPivot,
+      bloomSprite,
+      bloomMat,
+      burstRings,
+      burstOrbs,
+      miniCards,
+      sparks,
+      time: 0,
+    };
 
     const tick = () => {
       if (!this._gl) return;
@@ -278,10 +432,14 @@ export class PackOpener {
         g.tearPivot.rotation.z = this._ripProgress * 0.65;
         g.tearPivot.rotation.y = -this._ripProgress * 0.45;
         g.tearPivot.position.y = 1.12 + this._ripProgress * 0.28;
-        g.innerGlowMat.opacity = this._ripProgress * 0.65;
-        g.innerBeam.scale.setScalar(0.5 + this._ripProgress * 0.7);
+
+        // Soft glowing plasma flare builds smoothly inside the tear seam
+        const pulse = 1 + Math.sin(g.time * 14) * 0.08;
+        g.bloomMat.opacity = this._ripProgress * 0.92;
+        const bScale = (0.9 + this._ripProgress * 2.5) * pulse;
+        g.bloomSprite.scale.set(bScale * 1.15, bScale, 1);
       } else {
-        // Torn open explosion! Top strip flies off & 3 glowing cards burst upward!
+        // Torn open explosion! Top strip flies off, energy rings & glossy orbs burst outward, 3 cards rise!
         this._burstTimer += 0.016;
         const t = Math.min(1, this._burstTimer / 0.55);
         g.tearPivot.position.x += 0.22;
@@ -290,8 +448,39 @@ export class PackOpener {
         g.tearPivot.rotation.x += 0.18;
 
         g.packGroup.scale.set(1 + t * 0.22, Math.max(0.25, 1 - t * 0.5), 1 + t * 0.22);
-        g.innerGlowMat.opacity = Math.min(0.95, 0.7 + t * 0.4);
-        g.innerBeam.scale.setScalar(1.2 + t * 1.6);
+
+        // Soft radiant light bloom expands & fades cleanly
+        const bloomS = 2.8 + t * 4.4;
+        g.bloomSprite.scale.set(bloomS, bloomS, 1);
+        g.bloomMat.opacity = Math.max(0, 1.0 - t * 0.72);
+
+        // Expanding glowing 3D energy shockwave rings
+        for (const r of g.burstRings) {
+          const rt = Math.max(0, Math.min(1, (this._burstTimer - r.delay) / 0.46));
+          if (rt > 0) {
+            r.mesh.visible = true;
+            const ease = 1 - Math.pow(1 - rt, 3);
+            r.mesh.scale.setScalar(0.55 + ease * 3.1);
+            r.mesh.rotation.z += 0.06;
+            r.mat.opacity = Math.max(0, (1 - rt) * 0.92);
+          }
+        }
+
+        // Parabolic fountain of glowing burst orbs & star crystals
+        const dt = 0.016;
+        for (const orb of g.burstOrbs) {
+          orb.visible = true;
+          const u = orb.userData;
+          orb.position.x += u.vx * dt;
+          orb.position.y += u.vy * dt;
+          orb.position.z += u.vz * dt;
+          u.vy -= 6.8 * dt;
+          orb.rotation.x += u.spin;
+          orb.rotation.y += u.spin * 1.3;
+          const sc = u.baseScale * (1 - t * 0.55);
+          orb.scale.setScalar(Math.max(0.05, sc));
+          orb.material.opacity = Math.max(0, 1 - t * 0.85);
+        }
 
         g.miniCards.forEach((mc, i) => {
           mc.visible = true;
@@ -437,34 +626,45 @@ export class PackOpener {
       setTimeout(() => this.stage.classList.remove('pack-quake'), 300);
     }
 
-    // Spawn flying cartoon sparkle/star burst particles from the card!
-    const count = isMythic ? 28 : isLeg ? 22 : isEpic ? 14 : isRare ? 9 : 5;
+    // Spawn expanding glossy rarity ring + twinkling 4-point stars & glowing orb burst from the card!
+    const count = isMythic ? 30 : isLeg ? 24 : isEpic ? 16 : isRare ? 10 : 7;
     const colors = isMythic
       ? ['#ff381a', '#ffe047', '#ff5cf4', '#ffffff']
       : isLeg
       ? ['#ffbf00', '#fff48f', '#ff7a1a', '#ffffff']
       : isEpic
-      ? ['#bf42ff', '#ff66e0', '#50f5ff']
-      : ['#52f768', '#ffe047', '#36c9ff'];
+      ? ['#bf42ff', '#ff66e0', '#50f5ff', '#ffffff']
+      : ['#52f768', '#ffe047', '#36c9ff', '#ffffff'];
 
     const rect = cardEl.getBoundingClientRect();
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
 
+    // Smooth circular shockwave halo expanding out from the flipped card
+    const wave = document.createElement('span');
+    wave.className = `pack-ring-wave ${isMythic || isLeg ? 'mega' : ''}`;
+    wave.style.left = `${cx}px`;
+    wave.style.top = `${cy}px`;
+    wave.style.setProperty('--wave-col', colors[0]);
+    this.overlay.appendChild(wave);
+    setTimeout(() => wave.remove(), 700);
+
     for (let i = 0; i < count; i++) {
       const p = document.createElement('span');
-      p.className = 'pack-spark-dot';
+      const isStar = i % 2 === 0;
+      p.className = isStar ? 'pack-star-spark' : 'pack-spark-dot';
       const angle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.35;
-      const dist = (isMythic || isLeg ? 120 : 68) + Math.random() * 95;
+      const dist = (isMythic || isLeg ? 128 : 76) + Math.random() * 98;
       p.style.left = `${cx}px`;
       p.style.top = `${cy}px`;
       p.style.background = colors[i % colors.length];
       p.style.setProperty('--dx', `${Math.round(Math.cos(angle) * dist)}px`);
       p.style.setProperty('--dy', `${Math.round(Math.sin(angle) * dist)}px`);
-      p.style.width = `${isMythic || isLeg ? 13 : 9}px`;
-      p.style.height = `${isMythic || isLeg ? 13 : 9}px`;
+      const sz = isStar ? (isMythic || isLeg ? 20 : 15) : (isMythic || isLeg ? 12 : 9);
+      p.style.width = `${sz}px`;
+      p.style.height = `${sz}px`;
       this.overlay.appendChild(p);
-      setTimeout(() => p.remove(), 750);
+      setTimeout(() => p.remove(), 760);
     }
   }
 
@@ -482,25 +682,39 @@ export class PackOpener {
             return `
               <div class="loot-card hidden-face ${highTier ? 'high-tier-back' : ''} tier-${c.rarity}" role="button" tabindex="0" data-card-idx="${idx}"
                 style="--rar-col:${c.raritySpec.color}; --rar-glow:${c.raritySpec.glow}">
-                <div class="card-back">
-                  <span class="card-back-aura"></span>
-                  <span class="card-back-star">${renderIcon(c.rarity === 'mythic' ? 'flame' : c.rarity === 'legendary' ? 'crown' : 'star', 48)}</span>
-                  <span class="card-back-rar" style="background:${c.raritySpec.color}">${c.raritySpec.label}</span>
-                  <span class="card-back-tap">${highTier ? 'MEGA DROP!! TAP!' : 'TAP!'}</span>
-                </div>
-                <div class="card-front">
-                  <span class="card-rar-pill" style="background:${c.raritySpec.color}">${c.raritySpec.label}</span>
-                  <div class="card-orb" style="background:${c.color}">${renderIcon(c.icon || 'star', 34)}</div>
-                  <div class="card-name">${c.name}</div>
-                  <div class="card-sub">${c.subtitle}</div>
-                  <div class="card-foot">
-                    ${
-                      c.isNew
-                        ? `<span class="card-tag new">NEW UNLOCK!</span>
-                           <button type="button" class="card-equip-link" data-equip-idx="${idx}" data-equip-cat="${c.category}">EQUIP NOW</button>`
-                        : `<span class="card-tag dup">DUPLICATE!</span>
-                           <button type="button" class="card-equip-link sell-now" data-sell-uid="${c.dupUid}">SELL +${c.sellCoins}c</button>`
-                    }
+                <div class="loot-card-inner">
+                  <div class="card-face card-back">
+                    <div class="cb-pattern" aria-hidden="true"></div>
+                    <div class="cb-shimmer" aria-hidden="true"></div>
+                    <div class="cb-frame" aria-hidden="true">
+                      <span class="cb-corner tl"></span>
+                      <span class="cb-corner tr"></span>
+                      <span class="cb-corner bl"></span>
+                      <span class="cb-corner br"></span>
+                    </div>
+                    <div class="cb-brand">MONSTER SHIFT</div>
+                    <div class="cb-medallion">
+                      <span class="cb-medallion-ring"></span>
+                      <span class="cb-medallion-glow"></span>
+                      ${this._renderCardBackCrest(c.rarity, idx)}
+                    </div>
+                    <span class="card-back-rar" style="background:${c.raritySpec.color}">${c.raritySpec.label}</span>
+                    <span class="card-back-tap">${highTier ? '★ MEGA DROP! ★' : 'TAP TO FLIP'}</span>
+                  </div>
+                  <div class="card-face card-front">
+                    <span class="card-rar-pill" style="background:${c.raritySpec.color}">${c.raritySpec.label}</span>
+                    <div class="card-orb" style="background:${c.color}">${renderIcon(c.icon || 'star', 34)}</div>
+                    <div class="card-name">${c.name}</div>
+                    <div class="card-sub">${c.subtitle}</div>
+                    <div class="card-foot">
+                      ${
+                        c.isNew
+                          ? `<span class="card-tag new">NEW UNLOCK!</span>
+                             <button type="button" class="card-equip-link" data-equip-idx="${idx}" data-equip-cat="${c.category}">EQUIP NOW</button>`
+                          : `<span class="card-tag dup">DUPLICATE!</span>
+                             <button type="button" class="card-equip-link sell-now" data-sell-uid="${c.dupUid}">SELL +${c.sellCoins}c</button>`
+                      }
+                    </div>
                   </div>
                 </div>
               </div>

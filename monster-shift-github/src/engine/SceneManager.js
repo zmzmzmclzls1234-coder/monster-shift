@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from '../../vendor/three.module.min.js';
 import { TopDownCamera } from './TopDownCamera.js';
 
 /**
@@ -19,8 +19,8 @@ export class SceneManager {
       antialias: !this.isLowEnd,
       powerPreference: 'high-performance',
     });
-    const maxDpr = this.isLowEnd ? 1.45 : 1.8;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxDpr));
+    this.quality = 'high'; // resolved graphics preset: 'high' | 'low'
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, this._maxDpr()));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -72,6 +72,20 @@ export class SceneManager {
     window.addEventListener('resize', this._onResize);
   }
 
+  _maxDpr() {
+    if (this.quality === 'low') return 1.0;
+    return this.isLowEnd ? 1.45 : 1.8;
+  }
+
+  /** Apply a resolved graphics preset ('high' | 'low') instantly (no reload). */
+  setQuality(q) {
+    const next = q === 'low' ? 'low' : 'high';
+    if (next === this.quality) return;
+    this.quality = next;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, this._maxDpr()));
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+
   setShadowsEnabled(enabled) {
     this.renderer.shadowMap.enabled = enabled;
     this.sunLight.castShadow = enabled;
@@ -81,8 +95,7 @@ export class SceneManager {
   _handleResize() {
     const w = window.innerWidth;
     const h = window.innerHeight;
-    const maxDpr = this.isLowEnd ? 1.45 : 1.8;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxDpr));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, this._maxDpr()));
     this.renderer.setSize(w, h);
     this.cameraRig.onResize(w, h);
   }

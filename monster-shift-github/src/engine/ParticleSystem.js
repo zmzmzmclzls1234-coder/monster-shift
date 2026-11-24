@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from '../../vendor/three.module.min.js';
 
 const CONFETTI_COLORS = ['#ff5978', '#ffe05d', '#48e67e', '#4bbdff', '#b97aff', '#ff9a36'];
 
@@ -14,9 +14,23 @@ export class ParticleSystem {
     this.boxGeo = new THREE.BoxGeometry(0.22, 0.06, 0.22);
     this.ringGeo = new THREE.RingGeometry(0.65, 0.95, 32);
     this.ringGeo.rotateX(-Math.PI / 2);
+
+    // Graphics preset: LOW halves spawn counts and caps live particles.
+    this.countScale = 1;
+    this.maxParticles = 700;
+  }
+
+  setQuality(q) {
+    const low = q === 'low';
+    this.countScale = low ? 0.5 : 1;
+    this.maxParticles = low ? 220 : 700;
   }
 
   spawnBurst(pos, { count = 14, color = '#48e67e', speed = 5.5, scale = 1.0, confetti = false, upBias = 4.5 } = {}) {
+    count = Math.max(1, Math.round(count * this.countScale));
+    const room = this.maxParticles - this.particles.length;
+    if (room <= 0) return;
+    count = Math.min(count, room);
     for (let i = 0; i < count; i++) {
       const col = confetti ? CONFETTI_COLORS[i % CONFETTI_COLORS.length] : color;
       const mat = new THREE.MeshStandardMaterial({

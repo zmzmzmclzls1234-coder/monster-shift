@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from '../../vendor/three.module.min.js';
 import { createMonsterRig, createSurvivorRig } from '../models/CharacterFactory.js';
 import { applyToonOutlines, attachMeshOutline } from '../engine/ToonOutline.js';
 

@@ -1,4 +1,5 @@
-import * as THREE from 'three';
+import * as THREE from '../../vendor/three.module.min.js';
+import { isChristmasEventActive } from '../data/catalog.js';
 import {
   createGrassTexture,
   createPlazaTileTexture,
@@ -164,8 +165,126 @@ export class ArenaBuilder {
     pedAccent.rotation.x = Math.PI / 2;
     pedAccent.position.y = 0.22;
     this.pedestalGroup.add(pedAccent);
+
+    // Seamless Holiday Lobby Backdrop (Nov 20 ~ Jan 1): 2 charming 3D Christmas Trees + wrapped Gift Boxes!
+    if (isChristmasEventActive()) {
+      this._addLobbyXmasDecor(this.pedestalGroup);
+    }
+
     applyToonOutlines(this.pedestalGroup, 1.055);
     this.root.add(this.pedestalGroup);
+
+    // Lightweight drifting 3D Snowflakes (auto-visible in Lobby & Frosty Glacier, 0 FPS cost!)
+    this._buildSnowSystem();
+  }
+
+  _addLobbyXmasDecor(parent) {
+    const trunkMat = new THREE.MeshStandardMaterial({ color: '#7a4b2a', roughness: 0.75 });
+    const pineMat = new THREE.MeshStandardMaterial({ color: '#1ea84f', roughness: 0.55 });
+    const snowMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.35 });
+    const starMat = new THREE.MeshStandardMaterial({ color: '#ffe047', emissive: '#ffaa00', emissiveIntensity: 0.65, roughness: 0.2 });
+    const orbCols = ['#ff2e4c', '#ffe047', '#36d9ff', '#ff7ae2'];
+    const orbMats = orbCols.map((c) => new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 0.45, roughness: 0.2 }));
+
+    const treeSpots = [
+      { x: -4.2, z: -3.2, s: 1.05 },
+      { x: 4.3, z: -3.4, s: 0.92 },
+    ];
+    for (const sp of treeSpots) {
+      const tree = new THREE.Group();
+      tree.position.set(sp.x, 0, sp.z);
+      tree.scale.setScalar(sp.s);
+
+      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.34, 0.9, 10), trunkMat);
+      trunk.position.y = 0.45;
+      tree.add(trunk);
+
+      const tiers = [
+        { y: 1.35, r: 1.35, h: 1.45 },
+        { y: 2.3, r: 1.06, h: 1.25 },
+        { y: 3.12, r: 0.74, h: 1.05 },
+      ];
+      tiers.forEach((tr, ti) => {
+        const cone = new THREE.Mesh(new THREE.ConeGeometry(tr.r, tr.h, 12), pineMat);
+        cone.position.y = tr.y;
+        cone.castShadow = true;
+        tree.add(cone);
+
+        // Snow cap ring on each pine tier
+        const snowCap = new THREE.Mesh(new THREE.ConeGeometry(tr.r * 0.56, tr.h * 0.38, 12), snowMat);
+        snowCap.position.y = tr.y + tr.h * 0.32;
+        snowCap.userData.noOutline = true;
+        tree.add(snowCap);
+
+        // Festive baubles around tier edge
+        const count = ti === 2 ? 4 : 5;
+        for (let k = 0; k < count; k++) {
+          const a = (k / count) * Math.PI * 2 + ti * 0.7;
+          const orb = new THREE.Mesh(new THREE.SphereGeometry(0.14, 8, 8), orbMats[(k + ti) % orbMats.length]);
+          orb.position.set(Math.cos(a) * (tr.r * 0.82), tr.y - tr.h * 0.32, Math.sin(a) * (tr.r * 0.82));
+          orb.userData.noOutline = true;
+          tree.add(orb);
+        }
+      });
+
+      const topper = new THREE.Mesh(new THREE.OctahedronGeometry(0.28, 0), starMat);
+      topper.position.y = 3.85;
+      tree.add(topper);
+
+      parent.add(tree);
+    }
+
+    // Small wrapped Gift Boxes tucked neatly beside the trees
+    const gifts = [
+      { x: -3.2, z: -2.1, s: 0.68, box: '#ff304f', rib: '#ffe047', ry: 0.4 },
+      { x: -4.8, z: -2.0, s: 0.56, box: '#26a8ff', rib: '#ffffff', ry: -0.35 },
+      { x: 3.3, z: -2.2, s: 0.64, box: '#27d962', rib: '#ff304f', ry: -0.5 },
+    ];
+    for (const gf of gifts) {
+      const box = new THREE.Group();
+      box.position.set(gf.x, 0, gf.z);
+      box.rotation.y = gf.ry;
+      const bMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(gf.s, gf.s, gf.s),
+        new THREE.MeshStandardMaterial({ color: gf.box, roughness: 0.35 })
+      );
+      bMesh.position.y = gf.s / 2;
+      bMesh.castShadow = true;
+      box.add(bMesh);
+      const rMat = new THREE.MeshStandardMaterial({ color: gf.rib, roughness: 0.25 });
+      const ribA = new THREE.Mesh(new THREE.BoxGeometry(gf.s + 0.04, gf.s + 0.04, gf.s * 0.22), rMat);
+      ribA.position.y = gf.s / 2;
+      ribA.userData.noOutline = true;
+      const ribB = new THREE.Mesh(new THREE.BoxGeometry(gf.s * 0.22, gf.s + 0.04, gf.s + 0.04), rMat);
+      ribB.position.y = gf.s / 2;
+      ribB.userData.noOutline = true;
+      box.add(ribA, ribB);
+      parent.add(box);
+    }
+  }
+
+  _buildSnowSystem() {
+    const count = 130;
+    const positions = new Float32Array(count * 3);
+    const speeds = new Float32Array(count);
+    for (let i = 0; i < count; i++) {
+      positions[i * 3] = (Math.random() - 0.5) * 34;
+      positions[i * 3 + 1] = Math.random() * 14 + 0.5;
+      positions[i * 3 + 2] = (Math.random() - 0.5) * 28;
+      speeds[i] = 1.25 + Math.random() * 1.45;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const mat = new THREE.PointsMaterial({
+      color: '#ffffff',
+      size: 0.22,
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: false,
+    });
+    this.snowPoints = new THREE.Points(geo, mat);
+    this.snowSpeeds = speeds;
+    this.root.add(this.snowPoints);
   }
 
   _ensurePropTextures() {
@@ -705,6 +824,24 @@ export class ArenaBuilder {
   }
 
   update(dt, elapsed) {
+    if (this.snowPoints) {
+      const showSnow = Boolean((this.pedestalGroup?.visible && isChristmasEventActive()) || this.currentMapId === 'frost_island');
+      this.snowPoints.visible = showSnow;
+      if (showSnow) {
+        const pos = this.snowPoints.geometry.attributes.position;
+        for (let i = 0; i < pos.count; i++) {
+          let y = pos.getY(i) - this.snowSpeeds[i] * dt;
+          let x = pos.getX(i) + Math.sin(elapsed * 1.2 + i) * 0.35 * dt;
+          if (y < 0.1) {
+            y = 14.5;
+            x = (Math.random() - 0.5) * 34;
+          }
+          pos.setXY(i, x, y);
+        }
+        pos.needsUpdate = true;
+      }
+    }
+
     for (const item of this.swayProps) {
       item.group.rotation.z = Math.sin(elapsed * 1.4 + item.phase) * 0.032;
     }

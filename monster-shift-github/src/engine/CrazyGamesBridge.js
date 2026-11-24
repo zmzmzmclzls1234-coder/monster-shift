@@ -174,6 +174,39 @@ class CrazyGamesBridge {
     return null;
   }
 
+  /** True when a real CrazyGames rewarded ad can be requested (SDK ready inside the portal). */
+  isRewardedAvailable() {
+    return Boolean(this.ready && this.isCrazyGames && this.sdk?.ad?.requestAd);
+  }
+
+  /**
+   * Rewarded ad helper with a safe local/dev fallback.
+   * - On CrazyGames: shows a real 'rewarded' ad; resolves { rewarded: true } ONLY when adFinished fires.
+   * - Elsewhere (localhost / GitHub Pages): grants the reward as a TEST, limited by a per-key cooldown.
+   * Resolves { rewarded, test, reason } where reason ∈ 'ok' | 'ad_error' | 'cooldown' | 'busy'.
+   */
+  async requestRewarded(key = 'default', { testCooldownMs = 20000 } = {}) {
+    if (this._rewardedBusy) return { rewarded: false, test: false, reason: 'busy' };
+    this._rewardedBusy = true;
+    try {
+      if (this._initPromise) await this._initPromise;
+      if (this.isRewardedAvailable()) {
+        const res = await this.requestAd('rewarded');
+        return { rewarded: Boolean(res.rewarded), test: false, reason: res.rewarded ? 'ok' : 'ad_error' };
+      }
+      this._testCooldowns = this._testCooldowns || new Map();
+      const now = Date.now();
+      const readyAt = this._testCooldowns.get(key) || 0;
+      if (now < readyAt) {
+        return { rewarded: false, test: true, reason: 'cooldown', waitSec: Math.ceil((readyAt - now) / 1000) };
+      }
+      this._testCooldowns.set(key, now + testCooldownMs);
+      return { rewarded: true, test: true, reason: 'ok' };
+    } finally {
+      this._rewardedBusy = false;
+    }
+  }
+
   requestAd(type = 'midgame') {
     return new Promise((resolve) => {
       try {

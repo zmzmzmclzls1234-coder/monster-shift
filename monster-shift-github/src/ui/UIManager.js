@@ -16,9 +16,11 @@ import {
   getSkinById,
   getWeaponById,
   getRankInfo,
+  isChristmasEventActive,
 } from '../data/catalog.js';
 import { renderIcon, renderRankEmblem } from './CartoonIcons.js';
 import { crazyGames } from '../engine/CrazyGamesBridge.js';
+import { MONSTER_PASS_COIN_COST } from '../data/storage.js';
 
 function formatTime(sec) {
   const s = Math.max(0, Math.ceil(sec));
@@ -143,9 +145,54 @@ export class UIManager {
       else if (this.activeDrawer === 'shop') this._renderShopDrawer();
       else if (this.activeDrawer === 'locker') this._renderLockerDrawer();
     });
-    this.network.subscribe(() => {
+    this.network.subscribe((evt) => {
       this.refreshNetworkStatus();
-      if (this.activeDrawer === 'play') this._renderPlayDrawer();
+      if (evt.type === 'party_disbanded') {
+        this.sound.playDefeat();
+        if (this.activeDrawer === 'play') {
+          this._renderPlayDrawer(evt.message || 'PARTY DISBANDED BY HOST!', 'err');
+        } else {
+          this.showLobbyPartyNotice(evt.message || 'PARTY DISBANDED BY HOST!', 'err');
+        }
+        return;
+      }
+      if (evt.type === 'party_notice') {
+        if (this.activeDrawer === 'play') {
+          const activeId = document.activeElement?.id;
+          if (activeId === 'room-code-input' || activeId === 'relay-url-input') {
+            this._patchPlayPartyLive();
+          } else {
+            this._renderPlayDrawer(evt.message, 'ok');
+          }
+        } else if (evt.message) {
+          this.showLobbyPartyNotice(evt.message, 'ok');
+        }
+        return;
+      }
+      if (evt.type === 'party_mode') {
+        if (this.activeDrawer === 'play') {
+          const activeId = document.activeElement?.id;
+          if (activeId !== 'room-code-input' && activeId !== 'relay-url-input') {
+            this._renderPlayDrawer();
+          }
+        }
+        return;
+      }
+      if (evt.type === 'leaderboard') {
+        if (this.activeDrawer === 'play' && this.playTab === 'leaderboard') {
+          this._renderPlayDrawer();
+        }
+        return;
+      }
+      if (this.activeDrawer === 'play' && (evt.type === 'roster' || evt.type === 'status')) {
+        // Never wipe the party code input while the user is actively typing in it!
+        const activeId = document.activeElement?.id;
+        if (activeId === 'room-code-input' || activeId === 'relay-url-input') {
+          this._patchPlayPartyLive();
+        } else {
+          this._renderPlayDrawer();
+        }
+      }
     });
 
     this.refreshLobbyChrome();
@@ -164,11 +211,16 @@ export class UIManager {
       this.sound.unlock();
       this.sound.playClick();
       this.playTab = 'leaderboard';
+      this.network.requestLeaderboard?.();
       this.openDrawer('play');
     });
-    document.getElementById('btn-rankup-ok')?.addEventListener('click', () => {
+    document.getElementById('btn-rankup-ok')?.addEventListener('click', (e) => {
+      e.stopPropagation();
       this.sound.playClick();
-      this.rankupOverlay?.classList.add('hidden');
+      this._dismissRankUpOverlay(true);
+    });
+    this.rankupOverlay?.addEventListener('click', () => {
+      this._dismissRankUpOverlay(true);
     });
     document.getElementById('btn-characters').addEventListener('click', () => {
       this.sound.unlock();
@@ -246,15 +298,24 @@ export class UIManager {
       this.cb.onReturnToLobby();
     });
     document.getElementById('btn-results-lobby').addEventListener('click', () => {
+      this._clearAutoNextMatch();
       this.sound.playClick();
       this.cb.onReturnToLobby();
     });
     document.getElementById('btn-results-again').addEventListener('click', () => {
+      this._clearAutoNextMatch();
       this.sound.playClick();
       this.cb.onStartMatch();
     });
 
     window.addEventListener('keydown', (e) => {
+      if (this.rankupOverlay && !this.rankupOverlay.classList.contains('hidden')) {
+        if (e.code === 'Escape' || e.code === 'Space' || e.code === 'Enter') {
+          e.preventDefault();
+          this._dismissRankUpOverlay(true);
+          return;
+        }
+      }
       if (e.code === 'Escape') {
         if (this.activeDrawer) {
           this.closeDrawer();
@@ -283,6 +344,64 @@ export class UIManager {
     this.pauseOverlay.classList.toggle('hidden', !visible);
   }
 
+  _dismissRankUpOverlay(immediate = false) {
+    clearTimeout(this._rankUpAutoTimer);
+    clearTimeout(this._rankUpFadeTimer);
+    this._rankUpAutoTimer = null;
+    this._rankUpFadeTimer = null;
+    if (!this.rankupOverlay) return;
+    if (immediate) {
+      this.rankupOverlay.classList.remove('fade-out');
+      this.rankupOverlay.classList.add('hidden');
+      return;
+    }
+    this.rankupOverlay.classList.add('fade-out');
+    this._rankUpFadeTimer = setTimeout(() => {
+      this._rankUpFadeTimer = null;
+      this.rankupOverlay?.classList.remove('fade-out');
+      this.rankupOverlay?.classList.add('hidden');
+    }, 240);
+  }
+
+  _clearAutoNextMatch() {
+    clearTimeout(this._autoNextDelayTimer);
+    clearInterval(this._autoNextInterval);
+    this._autoNextDelayTimer = null;
+    this._autoNextInterval = null;
+  }
+
+  _startAutoNextMatch(delayMs = 0) {
+    this._clearAutoNextMatch();
+    const againBtn = document.getElementById('btn-results-again');
+    if (!againBtn || againBtn.classList.contains('hidden')) return;
+    // Do not auto-launch if locked as a non-host party member
+    if (this.network.inParty && this.network.getRoster().length > 1 && !this.network.isHost()) return;
+
+    this._autoNextDelayTimer = setTimeout(() => {
+      if (this.resultsLayer.classList.contains('hidden')) return;
+      let left = 7;
+      const updateBtn = () => {
+        if (!againBtn || this.resultsLayer.classList.contains('hidden')) {
+          this._clearAutoNextMatch();
+          return;
+        }
+        againBtn.textContent = `PLAY AGAIN (${left}s)`;
+      };
+      updateBtn();
+      this._autoNextInterval = setInterval(() => {
+        left -= 1;
+        if (left <= 0) {
+          this._clearAutoNextMatch();
+          if (!this.resultsLayer.classList.contains('hidden')) {
+            this.cb.onStartMatch?.();
+          }
+          return;
+        }
+        updateBtn();
+      }, 1000);
+    }, delayMs);
+  }
+
   _clearRankAnim() {
     if (this._rankAnimTimers) {
       this._rankAnimTimers.forEach((id) => clearTimeout(id));
@@ -292,6 +411,8 @@ export class UIManager {
       cancelAnimationFrame(this._rankAnimRaf);
       this._rankAnimRaf = null;
     }
+    this._dismissRankUpOverlay(true);
+    this._clearAutoNextMatch();
   }
 
   setScreen(screen) {
@@ -333,6 +454,7 @@ export class UIManager {
 
   refreshLobbyChrome() {
     const infMoney = this.profile.hasInfiniteMoney();
+    document.getElementById('lobby-xmas-pill')?.classList.toggle('hidden', !isChristmasEventActive());
     this.coinsEl.textContent = infMoney ? '∞' : String(this.profile.state.coins);
     this.shardsEl.textContent = infMoney ? '∞' : String(this.profile.state.shards);
     this.coinsEl.parentElement?.classList.toggle('infinite', infMoney);
@@ -366,8 +488,62 @@ export class UIManager {
 
   refreshNetworkStatus() {
     const count = this.network.getRoster().length;
-    const modeLabel = this.network.transport === 'ws' ? 'ONLINE' : 'ROOM';
-    this.netTextEl.textContent = `${modeLabel} ${this.network.roomCode} · ${count}/6`;
+    const pingTxt = this.network.transport === 'ws' && this.network.pingMs > 0 ? ` · ${this.network.pingMs}ms` : '';
+    const modeLabel =
+      this.network.transport === 'ws'
+        ? 'ONLINE'
+        : this.network.wsState === 'connecting' || this.network.wsState === 'reconnecting'
+        ? 'CONNECTING'
+        : 'ROOM';
+    const roleTag = this.network.inParty ? (this.network.isHost() ? ' ★HOST' : ' PARTY') : '';
+    this.netTextEl.textContent = `${modeLabel}${roleTag} ${this.network.roomCode} · ${count}/6${pingTxt}`;
+  }
+
+  showLobbyPartyNotice(text, tone = 'ok') {
+    if (!this.lobbyLayer || !text) return;
+    let el = document.getElementById('lobby-party-toast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'lobby-party-toast';
+      this.lobbyLayer.appendChild(el);
+    }
+    el.className = `lobby-party-toast ${tone === 'err' ? 'err' : 'ok'}`;
+    el.textContent = text;
+    clearTimeout(this._lobbyNoticeTimer);
+    this._lobbyNoticeTimer = setTimeout(() => {
+      el?.classList.add('hidden');
+    }, 3600);
+  }
+
+  _patchPlayPartyLive() {
+    const badge = document.getElementById('party-conn-title');
+    if (badge) {
+      badge.textContent =
+        this.network.transport === 'ws'
+          ? 'Party (ONLINE SERVER)'
+          : this.network.wsState === 'connecting' || this.network.wsState === 'reconnecting'
+          ? 'Party (CONNECTING...)'
+          : 'Party (LOCAL ROOM)';
+    }
+    const rosterGrid = document.getElementById('party-roster-grid');
+    if (rosterGrid) {
+      const roster = this.network.getRoster();
+      const inParty = this.network.inParty;
+      const slots = [];
+      for (let i = 0; i < 6; i++) {
+        const p = roster[i];
+        if (p) {
+          const pRk = getRankInfo(p.rr || 0);
+          const showHost = inParty && p.isHost;
+          slots.push(
+            `<div class="roster-slot human ${showHost ? 'is-host' : ''}">${renderRankEmblem(pRk.tier.id, 18)} <span class="roster-name">${p.name}${p.id === this.network.peerId ? ' (You)' : ''}</span>${showHost ? '<span class="host-crown-tag">HOST</span>' : ''}</div>`
+          );
+        } else {
+          slots.push(`<div class="roster-slot">AI Bot</div>`);
+        }
+      }
+      rosterGrid.innerHTML = slots.join('');
+    }
   }
 
   setStageCaption(role, name) {
@@ -900,14 +1076,14 @@ export class UIManager {
       html += `
         <div class="row-sub">Rip open 3D Packs to unlock rare Monsters, Survivors, Weapons, Skins, Auras &amp; Hats!</div>
         <div class="shop-pack-list">
-          ${PACK_TYPES.map((p) => {
+          ${PACK_TYPES.filter((p) => !p.isHoliday || isChristmasEventActive()).map((p) => {
             const owned = state.packs[p.id] || 0;
             const canAfford = effCoins >= p.price;
             return `
               <div class="shop-pack-card" style="--pack-a:${p.colorA}; --pack-b:${p.colorB}">
                 <div class="shop-pack-info">
                   <div class="lcc-top" style="justify-content:flex-start;gap:6px">
-                    <span class="rar-dot-inline" style="background:${p.colorA}">3D PACK</span>
+                    <span class="rar-dot-inline" style="background:${p.colorA}">${p.isHoliday ? '❄ UNTIL JAN 1' : '3D PACK'}</span>
                     ${owned > 0 ? `<span class="lcc-eq-dot">OWNED: ${owned}</span>` : ''}
                   </div>
                   <div class="lcc-name">${p.name}</div>
@@ -1280,8 +1456,12 @@ export class UIManager {
     });
   }
 
-  _renderPlayDrawer(partyFeedback = null) {
+  _renderPlayDrawer(partyFeedback = null, feedbackTone = 'ok') {
     const roster = this.network.getRoster();
+    const inParty = this.network.inParty;
+    const isHost = this.network.isHost();
+    const hostPlayer = this.network.getHostPlayer();
+    const isMemberLocked = inParty && !isHost && roster.length > 1;
     const playMode = this.profile.state.playMode === 'ranked' ? 'ranked' : 'casual';
     const rk = this.profile.getRankInfo();
     const eqM = getMonsterById(this.profile.state.equippedMonster);
@@ -1297,27 +1477,56 @@ export class UIManager {
     `;
 
     if (this.playTab === 'leaderboard') {
-      // Merge rivals + connected party peers + live player row, sorted strictly by Total RR descending!
-      const rows = [...LEADERBOARD_RIVALS.map((r) => ({ ...r, isYou: false }))];
+      // Merge REAL global players + connected party peers + local player + rival bots, sorted by Total RR descending!
+      const seenIds = new Set();
+      const myPid = this.profile.state.playerId || 'local_you';
+      seenIds.add(myPid);
+
+      const rows = [];
+      let realCount = 1; // Always includes local player
+
+      for (const gp of this.network.globalLeaderboard || []) {
+        if (!gp || !gp.id || seenIds.has(gp.id)) continue;
+        seenIds.add(gp.id);
+        realCount += 1;
+        rows.push({
+          id: gp.id,
+          name: gp.name || 'Player',
+          rr: gp.rr || 0,
+          isYou: false,
+          isReal: true,
+          online: Boolean(gp.online),
+        });
+      }
       for (const peer of this.network.peers.values()) {
-        rows.push({ id: peer.id, name: peer.name || 'Player', rr: peer.rr || 0, isYou: false, isPeer: true });
+        if (seenIds.has(peer.id)) continue;
+        seenIds.add(peer.id);
+        realCount += 1;
+        rows.push({ id: peer.id, name: peer.name || 'Player', rr: peer.rr || 0, isYou: false, isPeer: true, online: true });
+      }
+      for (const r of LEADERBOARD_RIVALS) {
+        rows.push({ ...r, isYou: false, isBot: true });
       }
       rows.push({
-        id: 'local_you',
+        id: myPid,
         name: this.profile.state.playerName,
         rr: rk.totalRR,
         isYou: true,
+        isReal: true,
+        online: true,
       });
-      rows.sort((a, b) => b.rr - a.rr);
+      rows.sort((a, b) => b.rr - a.rr || (b.isReal ? 1 : 0) - (a.isReal ? 1 : 0));
       const yourPos = rows.findIndex((r) => r.isYou) + 1;
+
+      const esc = (str) => String(str || '').replace(/[<>&"]/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[ch]));
 
       html += `
         <div class="play-mode-card" style="background:linear-gradient(120deg, #fffdf6, ${rk.tier.light}55)">
           <div style="display:flex;align-items:center;gap:10px">
             ${renderRankEmblem(rk.tier.id, 44)}
             <div style="flex:1">
-              <div class="row-title">${this.profile.state.playerName} <span class="item-badge" style="background:${rk.tier.color};color:#fff">#${yourPos}</span></div>
-              <div class="row-sub"><b>${rk.label.toUpperCase()}</b> · <b>${rk.totalRR} RR</b> (${rk.divRR}/100 to next rank)</div>
+              <div class="row-title">${esc(this.profile.state.playerName)} <span class="item-badge" style="background:${rk.tier.color};color:#fff">#${yourPos}</span></div>
+              <div class="row-sub"><b>${rk.label.toUpperCase()}</b> · <b>${rk.totalRR} RR</b> · ${realCount} REAL PLAYER${realCount === 1 ? '' : 'S'}</div>
               <div class="progress-track" style="margin-top:4px"><div class="progress-fill" style="width:${Math.min(100, rk.divRR)}%;background:${rk.tier.color}"></div></div>
             </div>
           </div>
@@ -1328,12 +1537,21 @@ export class UIManager {
               const rInfo = getRankInfo(entry.rr);
               const pos = i + 1;
               const medalCls = pos === 1 ? 'top1' : pos === 2 ? 'top2' : pos === 3 ? 'top3' : '';
+              const badgeHtml = entry.isYou
+                ? '<span class="lb-you-tag">YOU</span>'
+                : entry.isPeer
+                ? '<span class="lb-peer-tag">PARTY</span>'
+                : entry.isReal && entry.online
+                ? '<span class="lb-live-tag">LIVE</span>'
+                : entry.isReal
+                ? '<span class="lb-real-tag">PLAYER</span>'
+                : '<span class="lb-bot-tag">BOT</span>';
               return `
                 <div class="lb-row ${entry.isYou ? 'is-you' : ''} ${medalCls}">
                   <span class="lb-pos">#${pos}</span>
                   ${renderRankEmblem(rInfo.tier.id, 30)}
                   <div class="lb-name-col">
-                    <div class="lb-name">${entry.name} ${entry.isYou ? '<span class="lb-you-tag">YOU</span>' : entry.isPeer ? '<span class="lb-peer-tag">PARTY</span>' : ''}</div>
+                    <div class="lb-name">${esc(entry.name)} ${badgeHtml}</div>
                     <div class="lb-rank-lbl" style="color:${rInfo.tier.dark}">${rInfo.label.toUpperCase()}</div>
                   </div>
                   <div class="lb-rr-pill" style="background:${rInfo.tier.color}">${entry.rr} RR</div>
@@ -1349,7 +1567,10 @@ export class UIManager {
         const p = roster[i];
         if (p) {
           const pRk = getRankInfo(p.rr || 0);
-          slots.push(`<div class="roster-slot human">${renderRankEmblem(pRk.tier.id, 18)} <span>${p.name}${p.id === this.network.peerId ? ' (You)' : ''}</span></div>`);
+          const showHost = inParty && p.isHost;
+          slots.push(
+            `<div class="roster-slot human ${showHost ? 'is-host' : ''}">${renderRankEmblem(pRk.tier.id, 18)} <span class="roster-name">${p.name}${p.id === this.network.peerId ? ' (You)' : ''}</span>${showHost ? '<span class="host-crown-tag">HOST</span>' : ''}</div>`
+          );
         } else {
           slots.push(`<div class="roster-slot">AI Bot</div>`);
         }
@@ -1357,6 +1578,13 @@ export class UIManager {
       const relayUrl = this.network.getRelayServerUrl();
       const canShareLink = this.network.canShareInviteLink();
       const isEmbedded = this.network.isEmbeddedOrCrazyGames();
+      const launchLabel = isMemberLocked
+        ? `WAITING FOR HOST (${(hostPlayer?.name || 'HOST').toUpperCase()})...`
+        : inParty
+        ? `START PARTY ${playMode === 'ranked' ? 'RANKED' : 'CASUAL'} (${roster.length}/6)!`
+        : playMode === 'ranked'
+        ? `PLAY RANKED (${rk.label.toUpperCase()})!`
+        : 'PLAY CASUAL 1v5!';
 
       html += `
         <div class="play-mode-card">
@@ -1365,39 +1593,77 @@ export class UIManager {
             <span class="item-badge" style="background:#ff9524;color:#fff" title="Bots scale with your Rank + Win Rate">${wr.label} · ${wr.winPct}% WR</span>
           </div>
           <div class="mode-grid">
-            <button class="mode-tile ${playMode === 'casual' ? 'active casual' : ''}" data-play-mode="casual" type="button">
+            <button class="mode-tile ${playMode === 'casual' ? 'active casual' : ''}" data-play-mode="casual" type="button" ${isMemberLocked ? 'disabled' : ''}>
               <div class="mode-tile-title">CASUAL</div>
               <div class="mode-tile-sub">Fun 1v5 · No RR risk</div>
             </button>
-            <button class="mode-tile ${playMode === 'ranked' ? 'active ranked' : ''}" data-play-mode="ranked" type="button">
+            <button class="mode-tile ${playMode === 'ranked' ? 'active ranked' : ''}" data-play-mode="ranked" type="button" ${isMemberLocked ? 'disabled' : ''}>
               <div class="mode-tile-head">${renderRankEmblem(rk.tier.id, 24)} <span class="mode-tile-title">RANKED</span></div>
               <div class="mode-tile-sub">${rk.label} · ${rk.totalRR} RR</div>
             </button>
           </div>
           <div class="row-sub" style="margin:7px 0 9px">
-            Monster is <b>100% RANDOM</b> every match! Loadout: <b>${eqM.name}</b> / <b>${eqS.name}</b> + <b>${eqW.name}</b>
+            ${
+              isMemberLocked
+                ? `Mode &amp; Match Start controlled by Host <b>${hostPlayer?.name || 'Host'}</b>.`
+                : this.profile.hasMonsterPass()
+                ? `<b>MONSTER PASS ACTIVE:</b> you are the Monster (<b>${eqM.name}</b>) next match!`
+                : `Monster is <b>100% RANDOM</b> every match! Loadout: <b>${eqM.name}</b> / <b>${eqS.name}</b> + <b>${eqW.name}</b>`
+            }
           </div>
-          <button id="btn-launch-match" class="mini-btn buy-green" style="padding:13px;font-size:17px">
-            ${playMode === 'ranked' ? `PLAY RANKED (${rk.label.toUpperCase()})!` : 'PLAY CASUAL 1v5!'}
+          <button id="btn-launch-match" class="mini-btn ${isMemberLocked ? 'muted' : 'buy-green'}" style="padding:13px;font-size:17px" ${isMemberLocked ? 'disabled' : ''}>
+            ${launchLabel}
           </button>
         </div>
+        ${isMemberLocked ? '' : this._renderMonsterPassCard(eqM)}
 
         <div class="play-mode-card">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
-            <div class="row-title">Party (${this.network.transport === 'ws' ? 'ONLINE SERVER' : 'ROOM'})</div>
+            <div id="party-conn-title" class="row-title">Party (${
+              this.network.transport === 'ws'
+                ? 'ONLINE SERVER'
+                : this.network.wsState === 'connecting' || this.network.wsState === 'reconnecting'
+                ? 'CONNECTING...'
+                : 'LOCAL ROOM'
+            })</div>
             <span class="party-code-badge">CODE: ${this.network.roomCode}</span>
           </div>
+          ${
+            inParty
+              ? isHost
+                ? `<div class="party-role-banner is-host">★ YOU ARE THE PARTY HOST · YOU LEAD &amp; START MATCHES</div>`
+                : `<div class="party-role-banner is-member">PARTY MEMBER · HOST: <b>${hostPlayer?.name || 'HOST'}</b></div>`
+              : ''
+          }
           <div style="display:flex;gap:6px;margin-bottom:8px">
-            <button id="btn-create-party" class="mini-btn btn-orange-mini" style="flex:1;padding:9px 8px">CREATE PARTY</button>
-            <button id="btn-copy-code" class="mini-btn" style="width:auto;padding:9px 11px">COPY CODE</button>
-            ${canShareLink ? `<button id="btn-copy-link" class="mini-btn" style="width:auto;padding:9px 11px">INVITE LINK</button>` : ''}
+            ${
+              inParty
+                ? ''
+                : `<button id="btn-create-party" class="mini-btn btn-orange-mini" style="flex:1;padding:9px 8px">CREATE PARTY</button>`
+            }
+            <button id="btn-copy-code" class="mini-btn" style="${inParty ? 'flex:1;' : 'width:auto;'}padding:9px 11px">COPY CODE</button>
+            ${canShareLink ? `<button id="btn-copy-link" class="mini-btn" style="${inParty ? 'flex:1;' : 'width:auto;'}padding:9px 11px">INVITE LINK</button>` : ''}
           </div>
-          ${partyFeedback ? `<div class="code-feedback ok" style="margin-bottom:6px">${partyFeedback}</div>` : ''}
+          ${
+            inParty
+              ? `
+                <div class="party-ctrl-row">
+                  ${
+                    isHost
+                      ? `<button id="btn-disband-party" class="mini-btn buy-red">DISBAND PARTY</button>
+                         <button id="btn-leave-party" class="mini-btn btn-orange-mini">LEAVE PARTY</button>`
+                      : `<button id="btn-leave-party" class="mini-btn buy-red" style="grid-column:1 / -1">LEAVE PARTY</button>`
+                  }
+                </div>
+              `
+              : ''
+          }
+          ${partyFeedback ? `<div class="code-feedback ${feedbackTone === 'err' ? 'err' : 'ok'}" style="margin-bottom:6px">${partyFeedback}</div>` : ''}
           <div class="room-input-row" style="margin-bottom:8px">
-            <input id="room-code-input" class="text-input" maxlength="6" placeholder="Party code..." value="${this.network.roomCode}" />
+            <input id="room-code-input" class="text-input" maxlength="6" placeholder="Enter friend's code..." autocomplete="off" spellcheck="false" />
             <button id="btn-join-room" class="mini-btn buy-green" style="width:auto;padding:0 16px">JOIN PARTY</button>
           </div>
-          <div class="roster-grid" style="margin-bottom:${isEmbedded ? '0' : '8px'}">${slots.join('')}</div>
+          <div id="party-roster-grid" class="roster-grid" style="margin-bottom:${isEmbedded ? '0' : '8px'}">${slots.join('')}</div>
           ${
             isEmbedded
               ? ''
@@ -1421,19 +1687,25 @@ export class UIManager {
       btn.addEventListener('click', () => {
         this.sound.playClick();
         this.playTab = btn.dataset.playTab;
+        if (this.playTab === 'leaderboard') this.network.requestLeaderboard?.();
         this._renderPlayDrawer();
       });
     });
 
     this.drawerBody.querySelectorAll('[data-play-mode]').forEach((btn) => {
       btn.addEventListener('click', () => {
+        if (isMemberLocked) return;
         this.sound.playClick();
         this.profile.setPlayMode(btn.dataset.playMode);
+        this.network.setPartyPlayMode(btn.dataset.playMode);
         this._renderPlayDrawer();
       });
     });
 
+    this._bindMonsterPassCard();
+
     document.getElementById('btn-launch-match')?.addEventListener('click', () => {
+      if (isMemberLocked) return;
       this.sound.playClick();
       this.closeDrawer(false);
       this.cb.onTutorialAction('launch_match');
@@ -1443,7 +1715,18 @@ export class UIManager {
     document.getElementById('btn-create-party')?.addEventListener('click', () => {
       this.sound.playVictory();
       const code = this.network.createParty();
-      this._renderPlayDrawer(`PARTY CREATED! SHARE CODE: ${code}`);
+      this.network.setPartyPlayMode(this.profile.state.playMode);
+      this._renderPlayDrawer(`PARTY CREATED! YOU ARE HOST · CODE: ${code}`);
+    });
+
+    document.getElementById('btn-disband-party')?.addEventListener('click', () => {
+      this.sound.playDefeat();
+      this.network.disbandParty();
+    });
+
+    document.getElementById('btn-leave-party')?.addEventListener('click', () => {
+      this.sound.playClick();
+      this.network.leaveParty();
     });
 
     document.getElementById('btn-copy-code')?.addEventListener('click', () => {
@@ -1460,11 +1743,25 @@ export class UIManager {
       this._renderPlayDrawer(`INVITE LINK COPIED! (${this.network.roomCode})`);
     });
 
-    document.getElementById('btn-join-room')?.addEventListener('click', () => {
-      this.sound.playClick();
-      const code = document.getElementById('room-code-input').value;
-      this.network.joinRoom(code);
-      this._renderPlayDrawer(`JOINED PARTY: ${this.network.roomCode}`);
+    const doJoinParty = () => {
+      const raw = (document.getElementById('room-code-input')?.value || '').trim();
+      const clean = raw.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+      if (!clean) {
+        this.sound.playDefeat();
+        this._renderPlayDrawer('ENTER A PARTY CODE FIRST!', 'err');
+        return;
+      }
+      this.sound.playVictory();
+      this.network.joinRoom(clean, true, false);
+      const statusTxt = this.network.transport === 'ws' ? 'ONLINE' : 'CONNECTING TO SERVER...';
+      this._renderPlayDrawer(`JOINED PARTY: ${this.network.roomCode} (${statusTxt})`);
+    };
+    document.getElementById('btn-join-room')?.addEventListener('click', doJoinParty);
+    document.getElementById('room-code-input')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        doJoinParty();
+      }
     });
 
     document.getElementById('btn-save-relay')?.addEventListener('click', () => {
@@ -1472,6 +1769,90 @@ export class UIManager {
       const url = document.getElementById('relay-url-input').value;
       this.network.setRelayServerUrl(url);
       this._renderPlayDrawer(url ? 'CONNECTING TO MULTIPLAYER SERVER...' : 'RESET TO DEFAULT SERVER');
+    });
+  }
+
+  /* ---------------- MONSTER PASS (guaranteed monster next match) ---------------- */
+
+  _renderMonsterPassCard(eqM) {
+    const st = this.profile.state;
+    const active = this.profile.hasMonsterPass();
+    const tickets = st.monsterTickets || 0;
+    const coins = this.profile.getEffectiveCoins?.() ?? st.coins;
+    const canAfford = this.profile.hasInfiniteMoney?.() || coins >= MONSTER_PASS_COIN_COST;
+    const newM = st.lastNewMonsterId && st.lastNewMonsterId !== st.equippedMonster && this.profile.isOwned('monster', st.lastNewMonsterId)
+      ? getMonsterById(st.lastNewMonsterId)
+      : null;
+    const fb = this._mpFeedback;
+    this._mpFeedback = null;
+    const adLabel = crazyGames.isRewardedAvailable() ? 'WATCH AD' : 'WATCH AD (TEST)';
+    return `
+      <div class="play-mode-card monster-pass-card ${active ? 'active' : ''}" id="monster-pass-card">
+        <div class="mp-head">
+          <span class="mp-badge">MONSTER PASS</span>
+          <span class="mp-title">NEXT MATCH: GUARANTEED MONSTER</span>
+        </div>
+        ${
+          active
+            ? `<div class="mp-active-line">✓ ACTIVE · You will play <b style="color:${eqM.bodyColor || '#ff5470'}">${eqM.name}</b> next match!</div>`
+            : `<div class="mp-sub">Just pulled a new monster? Skip the 1-in-6 roll and play it right away.</div>
+               <div class="mp-actions">
+                 <button class="mini-btn mp-btn mp-ad" data-mp="ad" type="button"><span class="mp-play-ico">▶</span> ${adLabel}</button>
+                 ${tickets > 0 ? `<button class="mini-btn mp-btn buy-green" data-mp="ticket" type="button">FREE TICKET ×${tickets}</button>` : ''}
+                 <button class="mini-btn mp-btn btn-orange-mini" data-mp="coins" type="button" ${canAfford ? '' : 'disabled'}>${MONSTER_PASS_COIN_COST} COINS</button>
+               </div>`
+        }
+        ${newM ? `<button class="mini-btn mp-equip-new" data-mp-equip="${newM.id}" type="button">★ SWITCH TO NEW MONSTER: ${newM.name.toUpperCase()}</button>` : ''}
+        ${fb ? `<div class="code-feedback ${fb.tone === 'err' ? 'err' : 'ok'}" style="margin-top:6px">${fb.text}</div>` : ''}
+      </div>
+    `;
+  }
+
+  _bindMonsterPassCard() {
+    const card = document.getElementById('monster-pass-card');
+    if (!card) return;
+    card.querySelectorAll('[data-mp]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (this._mpBusy) return;
+        const source = btn.dataset.mp;
+        this._mpBusy = true;
+        this.sound.playClick();
+        card.querySelectorAll('[data-mp]').forEach((b) => (b.disabled = true));
+        if (source === 'ad') btn.innerHTML = 'LOADING AD...';
+        let res;
+        try {
+          res = await this.cb.onActivateMonsterPass?.(source);
+        } catch {
+          res = { ok: false, reason: 'ad_error' };
+        }
+        this._mpBusy = false;
+        if (res?.ok) {
+          this.sound.playRarityReveal('epic');
+          this._mpFeedback = { tone: 'ok', text: res.test ? 'MONSTER PASS ACTIVE! (LOCAL TEST MODE: NO REAL AD)' : 'MONSTER PASS ACTIVE! YOU ARE THE MONSTER NEXT MATCH!' };
+        } else {
+          this.sound.playAlert('critical');
+          const msg = {
+            ad_error: 'AD NOT AVAILABLE RIGHT NOW. TRY AGAIN SOON!',
+            cooldown: `TEST AD COOLDOWN: ${res?.waitSec || 0}s`,
+            no_coins: `NEED ${MONSTER_PASS_COIN_COST} COINS!`,
+            no_ticket: 'NO FREE TICKETS LEFT!',
+            already: 'MONSTER PASS ALREADY ACTIVE!',
+            busy: 'AN AD IS ALREADY LOADING...',
+          }[res?.reason] || 'COULD NOT ACTIVATE. TRY AGAIN!';
+          this._mpFeedback = { tone: 'err', text: msg };
+        }
+        this.refreshLobbyChrome?.();
+        if (this.activeDrawer === 'play') this._renderPlayDrawer();
+      });
+    });
+    card.querySelector('[data-mp-equip]')?.addEventListener('click', (e) => {
+      const id = e.currentTarget.dataset.mpEquip;
+      this.sound.playClick();
+      this.profile.equipItem('monster', id);
+      const st = this.profile.state;
+      this.cb.onPreviewCharacter?.('monster', id, st.equippedHat, st.equippedWeapon, st.equippedSkin, st.equippedAura, st.equippedTrail);
+      this.cb.onSettingsChanged?.();
+      this._renderPlayDrawer();
     });
   }
 
@@ -1494,8 +1875,22 @@ export class UIManager {
         <button class="toggle-btn ${s.music ? '' : 'off'}" data-setting="music">${s.music ? 'ON' : 'OFF'}</button>
       </div>
       <div class="setting-row">
-        <div class="row-info"><div class="row-title">Soft 3D Shadows</div><div class="row-sub">Disable on older phones</div></div>
-        <button class="toggle-btn ${s.shadows ? '' : 'off'}" data-setting="shadows">${s.shadows ? 'ON' : 'OFF'}</button>
+        <div class="row-info"><div class="row-title">Graphics Quality</div><div class="row-sub">${
+          (s.graphicsQuality || 'auto') === 'low'
+            ? 'LOW: 1.0x resolution, no shadows, 50% particles'
+            : (s.graphicsQuality || 'auto') === 'high'
+            ? 'HIGH: sharpest image + full effects'
+            : `AUTO: tuned for this device (${this.cb.getResolvedGraphicsQuality?.() === 'low' ? 'LOW' : 'HIGH'})`
+        }</div></div>
+        <div class="gfx-seg" role="radiogroup" aria-label="Graphics Quality">
+          ${['auto', 'high', 'low']
+            .map((q) => `<button class="gfx-seg-btn ${(s.graphicsQuality || 'auto') === q ? 'active' : ''}" data-gfx="${q}" type="button" role="radio" aria-checked="${(s.graphicsQuality || 'auto') === q}">${q.toUpperCase()}</button>`)
+            .join('')}
+        </div>
+      </div>
+      <div class="setting-row ${this.cb.getResolvedGraphicsQuality?.() === 'low' ? 'is-disabled' : ''}">
+        <div class="row-info"><div class="row-title">Soft 3D Shadows</div><div class="row-sub">${this.cb.getResolvedGraphicsQuality?.() === 'low' ? 'Off in LOW graphics mode' : 'Disable on older phones'}</div></div>
+        <button class="toggle-btn ${s.shadows ? '' : 'off'}" data-setting="shadows" ${this.cb.getResolvedGraphicsQuality?.() === 'low' ? 'disabled' : ''}>${s.shadows ? 'ON' : 'OFF'}</button>
       </div>
       <div class="setting-row">
         <div class="row-info"><div class="row-title">Reduced Screen Shake</div><div class="row-sub">Gentler impact motion</div></div>
@@ -1504,6 +1899,25 @@ export class UIManager {
       <div class="setting-row">
         <div class="row-info"><div class="row-title">Fullscreen Mode</div><div class="row-sub">Immersive full-screen play</div></div>
         <button id="btn-toggle-fs" class="toggle-btn ${document.fullscreenElement ? '' : 'off'}">${document.fullscreenElement ? 'ON' : 'OFF'}</button>
+      </div>
+      <div class="code-box">
+        <div class="code-box-head">
+          <span class="code-box-label">REDEEM CODE</span>
+          ${
+            this.profile.isAdminUnlocked()
+              ? `<button id="btn-open-admin" class="code-admin-shortcut" type="button">[OPEN ADMIN.EXE]</button>`
+              : ''
+          }
+        </div>
+        <div class="code-input-row">
+          <input id="redeem-code-input" class="code-input" maxlength="20" placeholder="Enter code..." autocomplete="off" spellcheck="false" />
+          <button id="btn-apply-code" class="code-apply-btn" type="button">APPLY</button>
+        </div>
+        ${
+          this._codeFeedback
+            ? `<div class="code-feedback ${this._codeFeedback.ok ? 'ok' : 'err'}">${this._codeFeedback.text}</div>`
+            : ''
+        }
       </div>
       <button id="btn-replay-intro" class="mini-btn btn-orange-mini" style="padding:11px;font-size:14px">
         REPLAY INTRO &amp; SPOTLIGHT TUTORIAL
@@ -1514,11 +1928,43 @@ export class UIManager {
       </button>
     `;
 
+    const doRedeem = () => {
+      const inp = document.getElementById('redeem-code-input');
+      const res = this.profile.redeemCode(inp?.value || '');
+      this._codeFeedback = { ok: res.ok, text: res.message };
+      if (res.ok) {
+        this.sound.playVictory();
+        if (res.isAdmin) this.cb.onOpenAdminPanel?.();
+      } else {
+        this.sound.playAlert('critical');
+      }
+      this._renderSettingsDrawer();
+    };
+    document.getElementById('btn-apply-code')?.addEventListener('click', doRedeem);
+    document.getElementById('redeem-code-input')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        doRedeem();
+      }
+    });
+    document.getElementById('btn-open-admin')?.addEventListener('click', () => {
+      this.sound.playClick();
+      this.cb.onOpenAdminPanel?.();
+    });
+
     document.getElementById('btn-save-name').addEventListener('click', () => {
       this.sound.playClick();
       this.profile.setPlayerName(document.getElementById('player-name-input').value);
       this.cb.onSettingsChanged();
       this._renderSettingsDrawer();
+    });
+    this.drawerBody.querySelectorAll('[data-gfx]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.sound.playClick();
+        this.profile.updateSetting('graphicsQuality', btn.dataset.gfx);
+        this.cb.onGraphicsQualityChanged?.();
+        this._renderSettingsDrawer();
+      });
     });
     this.drawerBody.querySelectorAll('[data-setting]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -1563,6 +2009,7 @@ export class UIManager {
   handleHudUpdate(msg) {
     if (msg.type === 'init') {
       const isMonster = msg.role === 'monster';
+      this.hudRoleCard.classList.remove('ghost');
       this.hudRoleCard.classList.toggle('monster', isMonster);
       this.hudRoleCard.classList.toggle('survivor', !isMonster);
       this.hudRoleLabel.textContent = msg.charName.toUpperCase();
@@ -1640,6 +2087,40 @@ export class UIManager {
     } else if (msg.type === 'hideBanner') {
       this.hudBannerActive = false;
       this._flushNextAlert();
+    } else if (msg.type === 'ghostStart' || msg.type === 'ghostProgress') {
+      const collected = msg.collected || 0;
+      const total = msg.total || 5;
+      const pct = Math.min(100, Math.round((collected / Math.max(1, total)) * 100));
+      this.hudRoleCard.classList.add('ghost');
+      this.hudRoleLabel.textContent = 'GHOST MODE';
+      this.hudGrowthLabel.textContent = `SOUL ORBS · ${collected}/${total} TO REVIVE`;
+      this.hudHealthFill.style.width = `${pct}%`;
+      this.hudHealthFill.style.background = 'linear-gradient(90deg, #22e3ff, #ffe047)';
+      this.primaryLabel.textContent = 'PHASE DASH';
+      this.primaryHint.textContent = 'SPACE: Phase Dash';
+      this.secondaryLabel.textContent = 'DASH';
+      this.secondaryHint.textContent = 'CLICK: Phase Dash';
+      this.hudStateText = `GHOST MODE · COLLECT SOUL ORBS TO REVIVE (${collected}/${total})`;
+      this._syncHudPopups();
+    } else if (msg.type === 'revived') {
+      this.hudRoleCard.classList.remove('ghost');
+      this.hudRoleLabel.textContent = (msg.charName || 'SURVIVOR').toUpperCase();
+      this.hudGrowthLabel.textContent = 'SURVIVOR · REVIVED!';
+      this.hudHealthFill.style.width = '100%';
+      this.hudHealthFill.style.background = 'linear-gradient(90deg, #25a8ff, #8cf2ff)';
+      this.primaryLabel.textContent = (msg.abilityName || 'ABILITY').toUpperCase();
+      this.primaryHint.textContent = `SPACE: ${msg.abilityName || 'Ability'}`;
+      this.secondaryLabel.textContent = 'FIRE';
+      this.secondaryHint.textContent = 'CLICK: Fire';
+      this._renderSurvivorDots(msg.survivorsAlive, 5);
+      if (msg.survivorsAlive > 1) this.sirenOverlay?.classList.add('hidden');
+      this.hudStateText = 'REVIVED! 2.5s SHIELD ACTIVE!';
+      this._showToast('REVIVED!! BACK IN THE GAME!');
+      this._syncHudPopups();
+    } else if (msg.type === 'remoteRevived') {
+      this._renderSurvivorDots(msg.survivorsAlive, 5);
+      if (msg.survivorsAlive > 1) this.sirenOverlay?.classList.add('hidden');
+      this._showToast(`${(msg.playerName || 'SURVIVOR').toUpperCase()} REVIVED!`);
     } else if (msg.type === 'elimination') {
       this._renderSurvivorDots(msg.survivorsAlive, 5);
       if (msg.survivorsAlive === 1) {
@@ -1689,7 +2170,13 @@ export class UIManager {
       this.primaryMask.style.transform = `scaleY(${msg.abilityRatio.toFixed(3)})`;
       this.secondaryMask.style.transform = `scaleY(${msg.fireRatio.toFixed(3)})`;
 
-      if (msg.alive) {
+      if (msg.ghostMode) {
+        const pct = Math.min(100, Math.round(((msg.soulCollected || 0) / Math.max(1, msg.soulTarget || 5)) * 100));
+        this.hudHealthFill.style.width = `${pct}%`;
+        this.hudHealthFill.style.background = 'linear-gradient(90deg, #22e3ff, #ffe047)';
+        this.hudStateText = msg.statusText;
+        this._syncHudPopups();
+      } else if (msg.alive) {
         if (this.hudRoleCard.classList.contains('survivor')) {
           this.hudHealthFill.style.width = msg.statusText === 'SNARED!' ? '45%' : '100%';
           this.hudHealthFill.style.background =
@@ -1799,6 +2286,59 @@ export class UIManager {
     }, 1750);
   }
 
+  _setupDoubleCoinsButton(summary) {
+    let btn = document.getElementById('btn-results-double');
+    if (!btn) return;
+    const fresh = btn.cloneNode(false); // drop listeners from the previous match
+    btn.replaceWith(fresh);
+    btn = fresh;
+    const coins = summary.coinsEarned || 0;
+    if (coins <= 0) {
+      btn.classList.add('hidden');
+      return;
+    }
+    btn.classList.remove('hidden', 'claimed');
+    btn.disabled = false;
+    const label = (txt) => `<span class="dbl-ico">▶</span><span class="dbl-main">${txt}</span>`;
+    btn.innerHTML = label(`2X COINS <small>(+${coins})</small> · WATCH AD`);
+    btn.addEventListener('click', async () => {
+      if (btn.disabled) return;
+      this._clearAutoNextMatch();
+      const ag = document.getElementById('btn-results-again');
+      if (ag) ag.textContent = 'PLAY AGAIN';
+      btn.disabled = true;
+      this.sound.playClick();
+      btn.innerHTML = label('LOADING AD...');
+      let res;
+      try {
+        res = await this.cb.onClaimDoubleCoins?.(summary);
+      } catch {
+        res = { ok: false, reason: 'ad_error' };
+      }
+      if (res?.ok) {
+        btn.classList.add('claimed');
+        btn.innerHTML = `<span class="dbl-main">✓ COINS DOUBLED! +${res.bonus}${res.test ? ' <small>(TEST)</small>' : ''}</span>`;
+        this.sound.playCoin();
+        setTimeout(() => this.sound.playCoin(), 120);
+        const statVal = this.resultsStats.querySelector('.stat-box .stat-val');
+        if (statVal) {
+          statVal.textContent = `+${coins * 2}`;
+          statVal.classList.remove('dbl-pop');
+          void statVal.offsetWidth;
+          statVal.classList.add('dbl-pop');
+        }
+        this.refreshLobbyChrome?.();
+      } else if (res?.reason === 'claimed') {
+        btn.classList.add('claimed');
+        btn.innerHTML = '<span class="dbl-main">✓ ALREADY CLAIMED</span>';
+      } else {
+        this.sound.playAlert('critical');
+        btn.disabled = false;
+        btn.innerHTML = label(res?.reason === 'cooldown' ? `TEST AD COOLDOWN ${res.waitSec}s · TRY AGAIN` : 'AD UNAVAILABLE · TRY AGAIN');
+      }
+    });
+  }
+
   showResults(summary) {
     this.setScreen('results');
     const tm = this.profile.getThreeMatchStatus();
@@ -1828,6 +2368,11 @@ export class UIManager {
         const isUp = ru.deltaRR >= 0;
         const sign = isUp ? `+${ru.deltaRR}` : `${ru.deltaRR}`;
 
+        const activityTag =
+          typeof ru.participationPct === 'number'
+            ? `ACTIVITY ${ru.participationPct}% (${ru.activityLabel || 'GOOD'}) · `
+            : '';
+
         this.resultsRankBox.classList.remove('hidden');
         this.resultsRankBox.innerHTML = `
           <div id="rr-emblem-slot">${renderRankEmblem(or.tier.id, 46)}</div>
@@ -1839,7 +2384,7 @@ export class UIManager {
                 <span id="rr-float-delta" class="rr-float-delta ${isUp ? 'up' : 'down'}">${sign}</span>
               </span>
             </div>
-            <div id="rr-sub-label" class="row-sub">${or.divRR}/100 RR to next division</div>
+            <div id="rr-sub-label" class="row-sub">${activityTag}${or.divRR}/100 RR to next division</div>
             <div class="progress-track" style="margin-top:5px">
               <div id="rr-bar-fill" class="progress-fill rr-bar-fill" style="width:${Math.min(100, or.divRR)}%;background:${or.tier.color}"></div>
             </div>
@@ -1914,14 +2459,14 @@ export class UIManager {
             if (liveNumEl) liveNumEl.textContent = String(cur);
             if (subLabelEl) {
               const curDiv = cur % 100;
-              subLabelEl.textContent = `${p < 1 ? curDiv : nr.divRR}/100 RR to next division`;
+              subLabelEl.textContent = `${activityTag}${p < 1 ? curDiv : nr.divRR}/100 RR to next division`;
             }
             if (p < 1) {
               this._rankAnimRaf = requestAnimationFrame(stepNum);
             } else {
               this._rankAnimRaf = null;
               if (liveNumEl) liveNumEl.textContent = String(endVal);
-              if (subLabelEl) subLabelEl.textContent = `${nr.divRR}/100 RR to next division`;
+              if (subLabelEl) subLabelEl.textContent = `${activityTag}${nr.divRR}/100 RR to next division`;
               if (ru.promoted && this.rankupOverlay) {
                 queueStep(() => {
                   this.sound.playRankUp();
@@ -1931,7 +2476,13 @@ export class UIManager {
                   this.rankupTierName.style.color = nr.tier.light;
                   this.rankupRrInfo.textContent = `${sign} RR · ${nr.totalRR} TOTAL RR`;
                   this.rankupOverlay.style.setProperty('--rank-col', nr.tier.color);
-                  this.rankupOverlay.classList.remove('hidden');
+                  this.rankupOverlay.classList.remove('fade-out', 'hidden');
+                  // Automatically fade out & hide the entire Rank-Up celebration after 1.5s so the player is NEVER stuck!
+                  clearTimeout(this._rankUpAutoTimer);
+                  clearTimeout(this._rankUpFadeTimer);
+                  this._rankUpAutoTimer = setTimeout(() => {
+                    this._dismissRankUpOverlay(false);
+                  }, 1500);
                 }, 280);
               }
             }
@@ -1944,10 +2495,14 @@ export class UIManager {
       }
     }
 
+    this._setupDoubleCoinsButton(summary);
+
     this.resultsMatchProg.textContent = summary.tutorialBanner
       ? summary.tutorialBanner
       : tm.ready
       ? `3/3 MATCHES COMPLETE! Claim "${tm.tierSpec.title}" in REWARDS!`
+      : tm.step === 2
+      ? `🔥 1 MORE MATCH FOR FREE PACK + ${tm.tierSpec.coins} COINS!`
       : `3-Match Reward Progress: ${tm.step}/3 (${tm.tierSpec.desc})`;
 
     const lobbyBtn = document.getElementById('btn-results-lobby');
@@ -1960,7 +2515,11 @@ export class UIManager {
       } else {
         lobbyBtn.textContent = 'LOBBY';
         lobbyBtn.className = 'dock-btn btn-sky';
+        againBtn.textContent = 'PLAY AGAIN';
         againBtn.classList.remove('hidden');
+        // Smooth auto-rematch loop (starts after RR animation completes on Ranked, or immediately on Casual)
+        const waitMs = summary.rankUpdate ? (summary.rankUpdate.promoted ? 6600 : 4800) : 600;
+        this._startAutoNextMatch(waitMs);
       }
     }
   }

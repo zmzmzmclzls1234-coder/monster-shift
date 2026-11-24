@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from '../../vendor/three.module.min.js';
 
 /**
  * Dedicated Top-Down 3D Camera Rig (slight elevated angle for clear 3D depth).

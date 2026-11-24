@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from '../../vendor/three.module.min.js';
 import { SoftBodySlime } from './SoftBodySlime.js';
 import { getGrowthStage, getWeaponById, getSkinById } from '../data/catalog.js';
 import { applyToonOutlines, attachMeshOutline } from '../engine/ToonOutline.js';
@@ -216,6 +216,29 @@ function buildHatMesh(hatId) {
       steamGroup.add(puff);
     }
     group.add(steamGroup);
+  } else if (hatId === 'santaHat') {
+    // Festive 3D Plush Red Santa Hat with fluffy white fur trim & hanging snowy pom-pom!
+    const redMat = new THREE.MeshStandardMaterial({ color: '#e62238', roughness: 0.35 });
+    const furMat = new THREE.MeshStandardMaterial({ color: '#fffdf8', roughness: 0.52 });
+
+    const brim = new THREE.Mesh(new THREE.TorusGeometry(0.46, 0.14, 10, 24), furMat);
+    brim.rotation.x = Math.PI / 2;
+    brim.position.y = 0.08;
+    group.add(brim);
+
+    const lowerCone = new THREE.Mesh(new THREE.ConeGeometry(0.44, 0.62, 16), redMat);
+    lowerCone.position.set(0.05, 0.4, -0.02);
+    lowerCone.rotation.z = -0.22;
+    group.add(lowerCone);
+
+    const droopTip = new THREE.Mesh(new THREE.ConeGeometry(0.22, 0.44, 14), redMat);
+    droopTip.position.set(0.32, 0.56, -0.02);
+    droopTip.rotation.z = -1.18;
+    group.add(droopTip);
+
+    const pom = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), furMat);
+    pom.position.set(0.54, 0.46, -0.02);
+    group.add(pom);
   }
 
   enableShadows(group);
@@ -317,6 +340,21 @@ function buildAuraMesh(auraId, radiusScale = 1.0) {
       const fl = new THREE.Mesh(new THREE.ConeGeometry(0.18, 0.54, 8), i % 2 === 0 ? fMat : gMat);
       fl.position.set(Math.cos(a) * r * 1.04, 0.72 + (i % 2) * 0.3, Math.sin(a) * r * 1.04);
       group.add(fl);
+    }
+  } else if (auraId === 'xmasBells') {
+    const goldMat = new THREE.MeshStandardMaterial({ color: '#ffe047', emissive: '#ffaa00', emissiveIntensity: 0.52, roughness: 0.22, metalness: 0.35 });
+    const redMat = new THREE.MeshStandardMaterial({ color: '#ff2b4a', emissive: '#b80f28', emissiveIntensity: 0.42, roughness: 0.22 });
+    const greenMat = new THREE.MeshStandardMaterial({ color: '#27d962', emissive: '#0c7a32', emissiveIntensity: 0.42, roughness: 0.24 });
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(r * 1.02, 0.065, 10, 32), goldMat);
+    ring.rotation.x = Math.PI / 2;
+    ring.position.y = 0.58;
+    group.add(ring);
+    const mats = [redMat, greenMat, goldMat];
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      const bauble = new THREE.Mesh(new THREE.SphereGeometry(0.17, 12, 10), mats[i % mats.length]);
+      bauble.position.set(Math.cos(a) * r * 1.04, 0.65 + (i % 2) * 0.26, Math.sin(a) * r * 1.04);
+      group.add(bauble);
     }
   }
 

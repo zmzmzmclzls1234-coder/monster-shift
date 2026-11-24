@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from '../vendor/three.module.min.js';
 import { ProfileStore } from './data/storage.js';
 import { SoundManager } from './audio/SoundManager.js';
 import { SceneManager } from './engine/SceneManager.js';
@@ -12,6 +12,7 @@ import { NetworkManager } from './net/NetworkManager.js';
 import { UIManager } from './ui/UIManager.js';
 import { PackOpener } from './ui/PackOpener.js';
 import { TutorialSpotlight } from './ui/TutorialSpotlight.js';
+import { AdminPanel } from './ui/AdminPanel.js';
 import { crazyGames } from './engine/CrazyGamesBridge.js';
 
 class MonsterShiftApp {
@@ -121,8 +122,10 @@ class MonsterShiftApp {
       onHudUpdate: (msg) => this.ui.handleHudUpdate(msg),
       onAlert: (kind, text) => this.ui.showAlert(kind, text),
       onTutorialAction: (act) => this.tutorial.notifyAction(act),
+      getAdminConfig: () => this.profile.getAdminConfig(),
       onMatchEnd: (summary) => {
         this.mode = 'results';
+        this.network.setClientMode('lobby');
         crazyGames.gameplayStop();
         this.tutorial.stop();
         this.profile.recordMatch({
@@ -134,10 +137,15 @@ class MonsterShiftApp {
         });
 
         // Apply Ranked RR gain/loss & promotion check if Ranked Mode!
-        // (Rank-up fanfare plays inside UIManager right when the animated RR bar crosses 100%!)
+        // Scales dynamically with match participation AND current rank tier!
         if (summary.playMode === 'ranked') {
-          const perfBonus = summary.eliminations * 2 + summary.weaponHits + summary.coopActions * 2;
-          summary.rankUpdate = this.profile.applyRankedMatch(summary.localWon, perfBonus);
+          summary.rankUpdate = this.profile.applyRankedMatch(summary.localWon, {
+            participation: summary.participation,
+            role: summary.localRole,
+            eliminations: summary.eliminations,
+            weaponHits: summary.weaponHits,
+            coopActions: summary.coopActions,
+          });
           this.applySettings(); // broadcast new RR to party peers
         }
 
@@ -187,6 +195,10 @@ class MonsterShiftApp {
           this.match.selectLocalWeapon(weaponId);
         },
         onStartMatch: () => this.handleStartMatchFromUi(),
+        onActivateMonsterPass: (source) => this.activateMonsterPass(source),
+        onClaimDoubleCoins: (summary) => this.claimDoubleCoins(summary),
+        onGraphicsQualityChanged: () => this.applySettings(),
+        getResolvedGraphicsQuality: () => this.getResolvedGraphicsQuality(),
         onReturnToLobby: () => this.handleReturnToLobbyFromUi(),
         onTogglePause: () => this.toggleUserPause(),
         onResumeMatch: () => this.setPaused(false, 'user'),
@@ -207,22 +219,36 @@ class MonsterShiftApp {
           this.startFirstTimeIntro();
         },
         onSettingsChanged: () => this.applySettings(),
+        onOpenAdminPanel: () => this.adminPanel?.open(),
+      },
+    });
+
+    this.adminPanel = new AdminPanel({
+      profile: this.profile,
+      network: this.network,
+      sound: this.sound,
+      callbacks: {
+        onAdminChanged: () => {
+          this.applySettings();
+          this.ui.refreshLobbyChrome();
+        },
+        onInstantWin: () => this.match.adminInstantWin(),
+        onMaxGrowth: () => this.match.adminMaxGrowth(),
       },
     });
 
     this.network.subscribe((evt) => {
       if (evt.type === 'match_start' && evt.payload && this.mode !== 'match') {
         this._beginMatchWithConfig(evt.payload);
+      } else if (evt.type === 'party_mode' && evt.mode && this.network.inParty && !this.network.isHost()) {
+        this.profile.setPlayMode(evt.mode);
       }
     });
 
     this._bindCanvasInteraction();
     this.applySettings();
-    if (this.profile.state.introSeen) {
-      this.enterLobby();
-    } else {
-      this.startFirstTimeIntro();
-    }
+    // Always play the signature Slime Tap & Eat-Survivor intro animation on game entry (with SKIP → button always ready!)
+    this.startFirstTimeIntro();
 
     this.clock = new THREE.Clock();
     this.elapsed = 0;
@@ -232,8 +258,14 @@ class MonsterShiftApp {
   applySettings() {
     const s = this.profile.state.settings;
     this.sound.setSettings({ sfx: s.sfx, music: s.music });
-    this.sceneManager.setShadowsEnabled(s.shadows);
+    const gfx = this.getResolvedGraphicsQuality();
+    this.sceneManager.setQuality(gfx);
+    this.particles.setQuality?.(gfx);
+    this.sceneManager.setShadowsEnabled(gfx !== 'low' && s.shadows);
     this.sceneManager.cameraRig.setReducedShake(s.reducedShake);
+    if (!this.network.inParty || this.network.isHost()) {
+      this.network.partyPlayMode = this.profile.state.playMode === 'ranked' ? 'ranked' : 'casual';
+    }
     this.network.setLocalMeta({
       name: this.profile.state.playerName,
       rr: this.profile.state.ranked?.rr || 0,
@@ -245,6 +277,48 @@ class MonsterShiftApp {
       auraId: this.profile.state.equippedAura,
       trailId: this.profile.state.equippedTrail,
     });
+    this.network.reportLeaderboard({
+      id: this.profile.state.playerId,
+      name: this.profile.state.playerName,
+      rr: this.profile.state.ranked?.rr || 0,
+      isAdmin: this.profile.isAdminUnlocked(),
+    });
+  }
+
+  /**
+   * Graphics preset resolution:
+   *  - HIGH / LOW: exactly what the player picked.
+   *  - AUTO: LOW on small touch devices, otherwise HIGH — and drops to LOW for the session
+   *    if gameplay sustains < 45 fps (see _monitorAutoQuality).
+   */
+  getResolvedGraphicsQuality() {
+    const pref = this.profile.state.settings.graphicsQuality || 'auto';
+    if (pref === 'low' || pref === 'high') return pref;
+    if (this._autoGfxDowngraded) return 'low';
+    const touchSmall = (navigator.maxTouchPoints || 0) > 0 && Math.min(window.innerWidth, window.innerHeight) < 600;
+    return touchSmall ? 'low' : 'high';
+  }
+
+  _monitorAutoQuality(rawDt) {
+    if (this._autoGfxDowngraded) return;
+    if ((this.profile.state.settings.graphicsQuality || 'auto') !== 'auto') return;
+    if (this.mode !== 'match' || this.isPaused() || document.hidden || this.match.introFreeze > 0) {
+      this._gfxSampleT = 0;
+      this._gfxSampleN = 0;
+      return;
+    }
+    if (rawDt > 0.25) return; // ignore hitches (tab switch, GC)
+    this._gfxSampleT = (this._gfxSampleT || 0) + rawDt;
+    this._gfxSampleN = (this._gfxSampleN || 0) + 1;
+    if (this._gfxSampleT >= 5) {
+      const fps = this._gfxSampleN / this._gfxSampleT;
+      this._gfxSampleT = 0;
+      this._gfxSampleN = 0;
+      if (fps < 45 && this.getResolvedGraphicsQuality() === 'high') {
+        this._autoGfxDowngraded = true;
+        this.applySettings();
+      }
+    }
   }
 
   _bindCanvasInteraction() {
@@ -328,7 +402,8 @@ class MonsterShiftApp {
     if (fromResults) {
       this._adTransitionBusy = true;
       try {
-        await crazyGames.requestAd('midgame');
+        if (this._skipNextMidgame) this._skipNextMidgame = false;
+        else await crazyGames.requestAd('midgame');
       } finally {
         this._adTransitionBusy = false;
       }
@@ -342,7 +417,8 @@ class MonsterShiftApp {
     if (fromResults) {
       this._adTransitionBusy = true;
       try {
-        await crazyGames.requestAd('midgame');
+        if (this._skipNextMidgame) this._skipNextMidgame = false;
+        else await crazyGames.requestAd('midgame');
       } finally {
         this._adTransitionBusy = false;
       }
@@ -357,7 +433,12 @@ class MonsterShiftApp {
     this.lobbyStage.leave();
     this.particles.clear();
     this.ui.setScreen('intro');
-    this.intro.start(this.profile.state.equippedMonster, this.profile.state.equippedHat);
+    this.intro.start(
+      this.profile.state.equippedMonster,
+      this.profile.state.equippedHat,
+      this.profile.state.equippedSkin,
+      this.profile.state.equippedAura
+    );
   }
 
   _setupResponsiveViewport() {
@@ -412,6 +493,7 @@ class MonsterShiftApp {
     this.sound.setPausedMute(this.isPaused());
     this.ui?.setPauseMenuVisible(false);
     this.mode = 'lobby';
+    this.network.setClientMode('lobby');
     crazyGames.gameplayStop();
     this.intro.stop();
     this.match.stopMatch();
@@ -440,10 +522,52 @@ class MonsterShiftApp {
   }
 
   launchMultiplayerMatch() {
+    // Only the Party Host can launch a match when multiple humans are in a party!
+    if (this.network.inParty && this.network.getRoster().length > 1 && !this.network.isHost()) {
+      return;
+    }
     this.applySettings();
-    const config = this.match.buildMatchConfig(this.profile.state, this.profile.getWinRateInfo());
+    const usePass = this.profile.hasMonsterPass();
+    const isFirstEverMatch = (this.profile.state.matchesCompleted || 0) === 0 && !this.profile.getAdminConfig().active;
+    const config = this.match.buildMatchConfig(this.profile.state, this.profile.getWinRateInfo(), {
+      forcedMonsterPlayerId: usePass ? this.network.peerId : null,
+      firstMatchMonsterId: !usePass && isFirstEverMatch ? this.network.peerId : null,
+    });
+    if (config.monsterPassUsed) this.profile.consumeMonsterPass();
     this.network.broadcastMatchStart(config);
     this._beginMatchWithConfig(config);
+    if (config.monsterPassUsed) {
+      setTimeout(() => {
+        if (this.mode === 'match') this.ui.showAlert('mutation', 'MONSTER PASS: YOU ARE THE MONSTER!');
+      }, 700);
+    }
+  }
+
+  /**
+   * MONSTER PASS activation from the PLAY drawer.
+   * source: 'ad' (CrazyGames rewarded ad, local test fallback w/ cooldown) | 'ticket' | 'coins'
+   */
+  async activateMonsterPass(source) {
+    if (this.profile.hasMonsterPass()) return { ok: false, reason: 'already' };
+    if (source === 'ad') {
+      const res = await crazyGames.requestRewarded('monster_pass', { testCooldownMs: 20000 });
+      if (!res.rewarded) return { ok: false, reason: res.reason, waitSec: res.waitSec };
+      const r = this.profile.activateMonsterPass(res.test ? 'test' : 'ad');
+      return { ...r, test: res.test };
+    }
+    return this.profile.activateMonsterPass(source);
+  }
+
+  /** Results screen "2X COINS (WATCH AD)": grants the match's coins one more time. */
+  async claimDoubleCoins(summary) {
+    if (!summary || summary._doubleClaimed) return { ok: false, reason: 'claimed' };
+    const res = await crazyGames.requestRewarded('double_coins', { testCooldownMs: 15000 });
+    if (!res.rewarded) return { ok: false, reason: res.reason, waitSec: res.waitSec };
+    if (summary._doubleClaimed) return { ok: false, reason: 'claimed' };
+    summary._doubleClaimed = true;
+    if (!res.test) this._skipNextMidgame = true; // player just watched an ad: don't stack a midgame ad on top
+    const bonus = this.profile.grantBonusCoins(summary.coinsEarned);
+    return { ok: true, bonus, test: res.test };
   }
 
   _beginMatchWithConfig(config) {
@@ -456,6 +580,7 @@ class MonsterShiftApp {
     this.sound.setPausedMute(this.isPaused());
     this.ui?.setPauseMenuVisible(false);
     this.mode = 'match';
+    this.network.setClientMode('match');
     this.intro.stop();
     this.lobbyStage.leave();
     this.particles.clear();
@@ -466,8 +591,10 @@ class MonsterShiftApp {
   }
 
   _tick() {
-    const dt = Math.min(0.05, this.clock.getDelta());
+    const rawDt = this.clock.getDelta();
+    const dt = Math.min(0.05, rawDt);
     const paused = this.isPaused();
+    this._monitorAutoQuality(rawDt);
 
     if (!paused) {
       this.elapsed += dt;

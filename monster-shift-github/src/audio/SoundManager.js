@@ -834,6 +834,39 @@ export class SoundManager {
     if (kind === 'snare') this._mNote(185, 'triangle', 0.03 * vel, 0.07, t); // snare body
   }
 
+  /** Crisp tactile arcade roulette peg click + ascending marimba pluck! */
+  playRouletteTick(progress = 0) {
+    if (!this._canPlay()) return;
+    if (!this._gate('roulette_tick', 0.028)) return;
+    const p = Math.max(0, Math.min(1, progress));
+    const baseFreq = 440 * Math.pow(2, p * 0.92); // climbs smoothly ~440Hz -> 835Hz!
+    // Tactile wooden peg snap
+    this._noise({ dur: 0.022, gain: 0.14, type: 'bandpass', f0: 2600 + p * 1200, Q: 4.2, attack: 0.001, reverb: 0.04 });
+    // Bright marimba/pop pluck
+    this._tone({ type: 'triangle', f0: baseFreq, f1: baseFreq * 1.06, dur: 0.068, gain: 0.17, attack: 0.003, reverb: 0.1 });
+    this._tone({ type: 'sine', f0: baseFreq * 2, f1: baseFreq * 2.02, dur: 0.045, gain: 0.07, attack: 0.002, reverb: 0.12 });
+  }
+
+  /** Juicy triumphant jackpot lock-in chime when the roulette lands on a mode! */
+  playRouletteLock() {
+    if (!this._canPlay()) return;
+    this._sub({ f0: 155, f1: 52, dur: 0.22, gain: 0.34, delay: 0 });
+    const chord = [523.25, 659.25, 783.99, 1046.5];
+    chord.forEach((f, i) => {
+      this._tone({
+        type: i === 3 ? 'triangle' : 'sine',
+        f0: f,
+        f1: f * 1.015,
+        dur: 0.28 + i * 0.05,
+        gain: 0.15,
+        delay: i * 0.042,
+        attack: 0.005,
+        reverb: 0.24,
+      });
+    });
+    this._noise({ dur: 0.09, gain: 0.08, delay: 0.12, type: 'highpass', f0: 6200, Q: 0.8, reverb: 0.2 });
+  }
+
   _stopMusicLoop() {
     if (this.musicTimer) {
       clearInterval(this.musicTimer);

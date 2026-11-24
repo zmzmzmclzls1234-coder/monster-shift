@@ -53,10 +53,9 @@ export class TutorialSpotlight {
     this.mode = 'tutorial';
 
     if (stage === 0) {
-      // Match #1 guided onboarding
+      // Match #1 guided onboarding (1-tap PLAY jumps directly into Match #1!)
       this.steps = [
         { id: 'click_play', selector: '#btn-play', text: 'TUTORIAL: TAP PLAY!', pad: 5 },
-        { id: 'launch_match', selector: '#btn-launch-match', text: 'START MATCH #1!', pad: 8 },
         { id: 'move', selector: '#touch-joystick-zone, #hud-controls-hint', text: 'MOVE! WASD / STICK', pad: 10, allowCanvas: true },
         { id: 'attack', selector: '#btn-secondary-action', text: 'ATTACK! CLICK / TAP', pad: 10, allowCanvas: true },
         { id: 'ability', selector: '#btn-primary-action', text: 'USE ABILITY! [SPACE]', pad: 10, allowCanvas: true },
@@ -74,7 +73,6 @@ export class TutorialSpotlight {
       // Match #2 with newly unlocked Monster!
       this.steps = [
         { id: 'click_play', selector: '#btn-play', text: 'PLAY MATCH #2! TAP PLAY!', pad: 5 },
-        { id: 'launch_match', selector: '#btn-launch-match', text: 'START MATCH #2!', pad: 8 },
       ];
     }
 

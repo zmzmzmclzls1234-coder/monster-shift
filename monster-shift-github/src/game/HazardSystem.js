@@ -483,7 +483,7 @@ export class HazardSystem {
     });
   }
 
-  update(dt, { arena, monster, entities, trackerSenseActive, localIsTracker, onWeaponHitMonster, onHazardHitSurvivor, onDecoyExplodeHit, onDecoyDestroyed }) {
+  update(dt, { arena, monster, entities, trackerSenseActive, localIsTracker, snowballFfa = false, onWeaponHitMonster, onSnowballHitPlayer, onHazardHitSurvivor, onDecoyExplodeHit, onDecoyDestroyed }) {
     // 1. Scout Radar Beam
     if (this.radarTimer > 0 && monster) {
       this.radarTimer = Math.max(0, this.radarTimer - dt);
@@ -743,14 +743,38 @@ export class HazardSystem {
       }
       if (hitDecoy) continue;
 
-      // Check Monster hit!
-      if (monster && monster.alive) {
-        const hitDist = monster.radius + (p.weaponSpec.id === 'bubble' ? 0.55 : 0.35);
-        if (Math.hypot(monster.pos.x - p.pos.x, monster.pos.z - p.pos.z) <= hitDist) {
-          if (p.weaponSpec.id === 'paint') {
-            this.spawnZone({ kind: 'paintSplat', x: monster.pos.x, z: monster.pos.z, radius: 2.0, duration: 6.0, ownerRole: 'survivor' });
+      // Snowball Fight FFA mode: snowballs hit ANY other alive player!
+      if (snowballFfa) {
+        let hitTarget = null;
+        for (const e of entities) {
+          if (!e.alive || e.id === p.ownerId) continue;
+          if (Math.hypot(e.pos.x - p.pos.x, e.pos.z - p.pos.z) <= (e.radius || 0.72) + 0.45) {
+            hitTarget = e;
+            break;
           }
-          onWeaponHitMonster(p.weaponSpec, p.dirX, p.dirZ, p.ownerId);
+        }
+        if (hitTarget) {
+          onSnowballHitPlayer?.(hitTarget, p.dirX, p.dirZ, p.ownerId);
+          this.group.remove(p.mesh);
+          this.projectiles.splice(i, 1);
+          continue;
+        }
+      } else {
+        // Check ALL alive Monsters (supports Classic 1v5, Infection multi-monsters, & 2v4 Chaos!)
+        let hitMonster = null;
+        for (const e of entities) {
+          if (e.role !== 'monster' || !e.alive) continue;
+          const hitDist = e.radius + (p.weaponSpec.id === 'bubble' ? 0.55 : 0.35);
+          if (Math.hypot(e.pos.x - p.pos.x, e.pos.z - p.pos.z) <= hitDist) {
+            hitMonster = e;
+            break;
+          }
+        }
+        if (hitMonster) {
+          if (p.weaponSpec.id === 'paint') {
+            this.spawnZone({ kind: 'paintSplat', x: hitMonster.pos.x, z: hitMonster.pos.z, radius: 2.0, duration: 6.0, ownerRole: 'survivor' });
+          }
+          onWeaponHitMonster(p.weaponSpec, p.dirX, p.dirZ, p.ownerId, hitMonster);
           this.group.remove(p.mesh);
           this.projectiles.splice(i, 1);
         }

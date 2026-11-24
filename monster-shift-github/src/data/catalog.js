@@ -232,6 +232,26 @@ export function getSurvivorById(id) { return SURVIVORS.find((s) => s.id === id) 
 export function getSkinById(id) { return SKINS.find((s) => s.id === id) || SKINS[0]; }
 export function getWeaponById(id) { return WEAPONS.find((w) => w.id === id) || WEAPONS[0]; }
 export function getMapById(id) { return MAPS.find((m) => m.id === id) || MAPS[0]; }
+// 6 PLAYABLE GAME MODES (Ranked = Classic 1v5 | Casual = Fast Roulette across all active modes!)
+// Snowball Fight automatically appears ONLY during the Winter/Christmas Event (Nov 20 ~ Jan 1)!
+export const GAME_MODES = [
+  { id: 'classic',        name: 'CLASSIC 1v5',    short: '1v5',      color: '#27d962', accent: '#c4ff70', duration: 90, desc: '1 Monster hunts 5 Survivors!', holiday: false },
+  { id: 'infection',      name: 'INFECTION',      short: 'INFECT',   color: '#9b42ff', accent: '#e8b5ff', duration: 75, desc: 'Caught Survivors turn into Slimes!', holiday: false },
+  { id: 'slime_brawl',    name: 'SLIME BRAWL',    short: 'BRAWL',    color: '#ff6e1a', accent: '#ffe047', duration: 75, desc: 'All 6 Slimes! Eat jellies, chomp rivals & fast respawn!', holiday: false },
+  { id: 'turbo_chaos',    name: '2v4 CHAOS',      short: '2v4',      color: '#ff3d77', accent: '#ff9ec2', duration: 60, desc: '2 Monsters vs 4 Survivors · Half Cooldowns!', holiday: false },
+  { id: 'star_rush',      name: 'STAR RUSH',      short: 'STARS',    color: '#ffbe1a', accent: '#fff48f', duration: 75, desc: 'Survivors collect 18 Stars to win instantly!', holiday: false },
+  { id: 'snowball_fight', name: 'SNOWBALL FIGHT', short: '❄ SNOW',   color: '#36c9ff', accent: '#ffffff', duration: 65, desc: '❄ Winter Event! 6-Player Snowball KO Arena (First to 5)!', holiday: true },
+];
+
+export function getGameModeById(id) {
+  return GAME_MODES.find((m) => m.id === id) || GAME_MODES[0];
+}
+
+export function getAvailableCasualModes(now = new Date()) {
+  const xmas = isChristmasEventActive(now);
+  return GAME_MODES.filter((m) => !m.holiday || xmas);
+}
+
 export function getPackById(id) { return PACK_TYPES.find((p) => p.id === id) || PACK_TYPES[0]; }
 
 /**

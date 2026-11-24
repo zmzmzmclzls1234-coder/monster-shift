@@ -13,6 +13,7 @@ import {
   getWeaponById,
   getMapById,
   getGrowthStage,
+  getGameModeById,
   isChristmasEventActive,
 } from '../data/catalog.js';
 
@@ -123,6 +124,15 @@ export class MatchEngine {
     this.xmasGifts = [];
     this.xmasGiftTimer = 18.0;
     this.localGiftCoins = 0;
+
+    // Multi-mode Collectible Group (Slime Brawl Energy Jellies & Star Rush Golden Stars!)
+    this.gameMode = 'classic';
+    this.modeOrbGroup = new THREE.Group();
+    this.group.add(this.modeOrbGroup);
+    this.modeOrbs = [];
+    this.teamStars = 0;
+    this.starGoal = 18;
+    this.snowKoGoal = 5;
 
     this.active = false;
     this.paused = false;
@@ -267,27 +277,60 @@ export class MatchEngine {
       botIdx += 1;
     }
 
-    // Monster is chosen randomly every match — unless MONSTER PASS, First-Match Onboarding, or active Admin Force Role specifies otherwise.
+    // Determine Game Mode: Ranked is ALWAYS fair Classic 1v5; Casual uses rolled Roulette mode!
+    const playMode = localProfile.playMode === 'ranked' ? 'ranked' : 'casual';
+    const gameMode = playMode === 'ranked' ? 'classic' : (opts.gameMode || 'classic');
+    const modeSpec = getGameModeById(gameMode);
+
+    // Pick Monster player(s) depending on mode
     const admin = this.getAdminConfig?.() || {};
     const forcedId = opts.forcedMonsterPlayerId;
     const forcedOk = Boolean(forcedId && players.some((p) => p.id === forcedId));
     const firstMatchId = opts.firstMatchMonsterId;
     const firstMatchOk = Boolean(firstMatchId && players.some((p) => p.id === firstMatchId));
-    let monsterPlayerId;
+
+    let monsterPlayerIds = [];
     let monsterPassUsed = false;
-    if (forcedOk) {
-      monsterPlayerId = forcedId;
-      monsterPassUsed = true;
-    } else if (admin.active && admin.forceRole === 'monster') {
-      monsterPlayerId = this.network.peerId;
-    } else if (admin.active && admin.forceRole === 'survivor') {
-      const others = players.filter((p) => p.id !== this.network.peerId);
-      monsterPlayerId = others.length ? others[Math.floor(Math.random() * others.length)].id : players[0].id;
-    } else if (firstMatchOk) {
-      // Guarantee brand-new players experience the signature Monster hunt & evolution on Match #1!
-      monsterPlayerId = firstMatchId;
+
+    if (gameMode === 'slime_brawl') {
+      // ALL 6 players spawn as Slime Monsters!
+      monsterPlayerIds = players.map((p) => p.id);
+    } else if (gameMode === 'snowball_fight') {
+      // ALL 6 players spawn as Snowball Survivors!
+      monsterPlayerIds = [];
+    } else if (gameMode === 'turbo_chaos') {
+      // 2 Monsters vs 4 Survivors!
+      let firstM;
+      if (forcedOk) {
+        firstM = forcedId;
+        monsterPassUsed = true;
+      } else if (admin.active && admin.forceRole === 'monster') {
+        firstM = this.network.peerId;
+      } else if (admin.active && admin.forceRole === 'survivor') {
+        const others = players.filter((p) => p.id !== this.network.peerId);
+        firstM = others[Math.floor(Math.random() * others.length)].id;
+      } else {
+        firstM = players[Math.floor(Math.random() * players.length)].id;
+      }
+      const secondPool = players.filter((p) => p.id !== firstM && !(admin.active && admin.forceRole === 'survivor' && p.id === this.network.peerId));
+      const secondM = secondPool.length ? secondPool[Math.floor(Math.random() * secondPool.length)].id : null;
+      monsterPlayerIds = secondM ? [firstM, secondM] : [firstM];
     } else {
-      monsterPlayerId = players[Math.floor(Math.random() * players.length)].id;
+      let monsterPlayerId;
+      if (forcedOk) {
+        monsterPlayerId = forcedId;
+        monsterPassUsed = true;
+      } else if (admin.active && admin.forceRole === 'monster') {
+        monsterPlayerId = this.network.peerId;
+      } else if (admin.active && admin.forceRole === 'survivor') {
+        const others = players.filter((p) => p.id !== this.network.peerId);
+        monsterPlayerId = others.length ? others[Math.floor(Math.random() * others.length)].id : players[0].id;
+      } else if (firstMatchOk) {
+        monsterPlayerId = firstMatchId;
+      } else {
+        monsterPlayerId = players[Math.floor(Math.random() * players.length)].id;
+      }
+      monsterPlayerIds = [monsterPlayerId];
     }
 
     // Randomly assign one of the 4 distinct 3D Cartoon Maps every match!
@@ -296,11 +339,13 @@ export class MatchEngine {
     return {
       matchId: 'm_' + Date.now().toString(36),
       mapId: chosenMap.id,
-      playMode: localProfile.playMode === 'ranked' ? 'ranked' : 'casual',
-      duration: MATCH_DURATION,
+      playMode,
+      gameMode,
+      duration: modeSpec.duration || MATCH_DURATION,
       aiSkill: winRateInfo.aiSkill ?? 0.45,
       aiLabel: winRateInfo.label || 'BALANCED BOTS',
-      monsterPlayerId,
+      monsterPlayerId: monsterPlayerIds[0] || null,
+      monsterPlayerIds,
       monsterPassUsed,
       players,
     };
@@ -311,9 +356,15 @@ export class MatchEngine {
     this.active = true;
     this.paused = false;
     this.playMode = config.playMode === 'ranked' ? 'ranked' : 'casual';
+    this.gameMode = config.gameMode || 'classic';
+    const modeSpec = getGameModeById(this.gameMode);
     this.currentMap = getMapById(config.mapId || 'sunny_park');
     this.arena.setMapTheme(this.currentMap.id);
-    this.timeRemaining = config.duration || MATCH_DURATION;
+    this.timeRemaining = config.duration || modeSpec.duration || MATCH_DURATION;
+    this.teamStars = 0;
+    this.starGoal = 18;
+    this.snowKoGoal = 5;
+    this._clearModeOrbs();
     this.aiSkill = config.aiSkill ?? 0.45;
     this.aiLabel = config.aiLabel || 'BALANCED BOTS';
     this.introFreeze = 1.0;
@@ -338,6 +389,7 @@ export class MatchEngine {
     this.matchStartTime = performance.now();
 
     this.arena.setLobbyPedestalVisible(false);
+    this.arena.forceSnow = this.gameMode === 'snowball_fight';
     this.arena.resetBeacons();
     this.hazards.clear();
     this.input.reset();
@@ -346,13 +398,18 @@ export class MatchEngine {
     this.sceneManager.cameraRig.setMatchBounds(this.arena.halfW, this.arena.halfD);
     this.sceneManager.cameraRig.setMode('match', false);
 
+    const monsterIdSet = new Set(config.monsterPlayerIds || (config.monsterPlayerId ? [config.monsterPlayerId] : []));
+    const isSnowballMode = this.gameMode === 'snowball_fight';
+    const isBrawlMode = this.gameMode === 'slime_brawl';
+    const isChaosMode = this.gameMode === 'turbo_chaos';
     let spawnIdx = 0;
+    let monSpawnIdx = 0;
     for (const p of config.players) {
-      const isMonster = p.id === config.monsterPlayerId;
+      const isMonster = monsterIdSet.has(p.id);
       const isLocal = p.id === this.network.peerId;
       const mSpec = getMonsterById(p.monsterId);
       const sSpec = getSurvivorById(p.survivorId);
-      const wSpec = getWeaponById(p.weaponId);
+      const wSpec = isSnowballMode ? getWeaponById('frostgun') : getWeaponById(p.weaponId);
       const skinSpec = getSkinById(p.skinId || 'classic');
       const perk = skinSpec.perk || {};
 
@@ -370,8 +427,13 @@ export class MatchEngine {
       }
 
       const pos = new THREE.Vector3();
-      if (isMonster) {
-        pos.set(0, 0, 0);
+      if (isMonster && !isBrawlMode) {
+        if (monsterIdSet.size >= 2) {
+          pos.set(monSpawnIdx === 0 ? -3.6 : 3.6, 0, 0);
+          monSpawnIdx += 1;
+        } else {
+          pos.set(0, 0, 0);
+        }
       } else {
         const [sx, sz] = SURVIVOR_SPAWNS[spawnIdx % SURVIVOR_SPAWNS.length];
         spawnIdx += 1;
@@ -382,6 +444,7 @@ export class MatchEngine {
       rig.root.add(revealHalo);
       this.group.add(rig.root);
 
+      const cdMult = isChaosMode ? 0.52 : 1.0;
       const entity = {
         id: p.id,
         name: isMonster && p.isBot ? mSpec.name : p.name,
@@ -391,11 +454,18 @@ export class MatchEngine {
         monsterSpec: mSpec,
         survivorSpec: sSpec,
         weaponSpec: wSpec,
+        hatId: p.hatId || 'none',
+        auraId: p.auraId || 'none',
         skinSpec,
         perk,
         trailId: p.trailId || 'none',
         trailAccum: 0,
         alive: true,
+        infected: false,
+        brawlMass: 0,
+        snowHp: 3,
+        snowKOs: 0,
+        respawnTimer: 0,
         ghostMode: false,
         reviveUsed: false,
         ghostDashCd: 0,
@@ -413,11 +483,13 @@ export class MatchEngine {
         growthStage: 1,
         eliminations: 0,
 
-        // Cooldowns modified by Skin Perks!
+        // Cooldowns modified by Skin Perks & Mode!
         abilityCooldown: 0,
-        abilityMaxCd: (isMonster ? mSpec.cooldown : sSpec.cooldown) * (perk.abilityCdMult || 1.0),
+        abilityMaxCd: (isMonster ? mSpec.cooldown : sSpec.cooldown) * (perk.abilityCdMult || 1.0) * cdMult,
         fireCooldown: 0,
-        fireMaxCd: (isMonster ? 2.1 : wSpec.cooldown) * (perk.fireCdMult || 1.0),
+        fireMaxCd: isSnowballMode
+          ? 0.62
+          : (isMonster ? 2.1 : wSpec.cooldown) * (perk.fireCdMult || 1.0) * (isChaosMode ? 0.58 : 1.0),
 
         // Active ability & status timers
         lungeTimer: 0,
@@ -470,17 +542,42 @@ export class MatchEngine {
       this.sceneManager.cameraRig.snapToFocus(this.localEntity.pos.x, 0.5, this.localEntity.pos.z);
     }
 
+    // Spawn mode-specific collectibles right at match start!
+    if (this.gameMode === 'slime_brawl') {
+      this._spawnModeOrbs('jelly', 12);
+    } else if (this.gameMode === 'star_rush') {
+      this._spawnModeOrbs('star', 10);
+    }
+
     const le = this.localEntity;
     const isLocalMonster = le?.role === 'monster';
     const charName = isLocalMonster ? le.monsterSpec.name : le.survivorSpec.name;
     const abName = isLocalMonster ? le.monsterSpec.abilityName : le.survivorSpec.abilityName;
     const monEnt = this.monsterEntity;
-    const monsterPlayerName = monEnt ? (monEnt.isLocal ? `${monEnt.name} (YOU)` : monEnt.name) : 'MONSTER';
-    const monsterCharName = monEnt?.monsterSpec?.name || 'Monster';
+    const monsterPlayerName = isSnowballMode
+      ? 'ALL 6 SNOWBALL FFA!'
+      : isBrawlMode
+      ? 'ALL 6 SLIME BRAWL!'
+      : isChaosMode
+      ? '2 MONSTERS VS 4 SURVIVORS!'
+      : monEnt
+      ? (monEnt.isLocal ? `${monEnt.name} (YOU)` : monEnt.name)
+      : 'MONSTER';
+    const monsterCharName = isSnowballMode
+      ? 'FIRST TO 5 KOs!'
+      : isBrawlMode
+      ? 'EAT JELLIES & GROW!'
+      : isChaosMode
+      ? 'HALF COOLDOWNS!'
+      : monEnt?.monsterSpec?.name || 'Monster';
+    const survivorsTotal = isBrawlMode || isSnowballMode ? 6 : this._countAliveSurvivors();
 
     this.onHudUpdate({
       type: 'init',
       role: le?.role || 'survivor',
+      gameMode: this.gameMode,
+      modeName: modeSpec.name,
+      modeDesc: modeSpec.desc,
       charName,
       abilityName: abName,
       weaponId: le?.weaponSpec?.id || 'foam',
@@ -492,17 +589,24 @@ export class MatchEngine {
       monsterIsLocal: isLocalMonster,
       monsterIsBot: Boolean(monEnt?.isBot),
       bannerTitle: this.currentMap.name.toUpperCase(),
-      bannerSub: `MONSTER: ${monsterPlayerName} · ${monsterCharName.toUpperCase()}`,
-      survivorsAlive: this._countAliveSurvivors(),
-      survivorsTotal: 5,
+      bannerSub: `${modeSpec.name} · ${monsterPlayerName}`,
+      survivorsAlive: isBrawlMode || isSnowballMode ? 6 : survivorsTotal,
+      survivorsTotal,
       timeRemaining: this.timeRemaining,
       growthStage: 1,
       stageTitle: getGrowthStage(1).title,
     });
 
-    // Clear cartoon visual & audio alert when someone mutates into the Monster!
+    // Clear cartoon visual & audio alert when match launches!
     if (this.onAlert) {
-      this.onAlert('mutation', 'MUTATION DETECTED!');
+      const startAlert =
+        this.gameMode === 'snowball_fight' ? 'SNOWBALL FIGHT! FIRST TO 5 KOs!' :
+        this.gameMode === 'slime_brawl' ? 'SLIME BRAWL! EAT JELLIES & CHOMP RIVALS!' :
+        this.gameMode === 'infection' ? 'INFECTION! CAUGHT PLAYERS BECOME SLIMES!' :
+        this.gameMode === 'turbo_chaos' ? '2v4 TURBO CHAOS! HALF COOLDOWNS!' :
+        this.gameMode === 'star_rush' ? 'STAR RUSH! COLLECT 18 STARS TO WIN!' :
+        'MUTATION DETECTED!';
+      this.onAlert('mutation', startAlert);
     }
   }
 
@@ -519,12 +623,14 @@ export class MatchEngine {
     this.paused = false;
     this.celebration = null;
     this.sound.setMatchIntensity(false);
+    this.arena.forceSnow = false;
     this.sceneManager.cameraRig.setProximityShake(0);
     this.coopLine.visible = false;
     this.aimIndicator.visible = false;
     this.vortexMesh.visible = false;
     this._clearSoulOrbs();
     this._clearXmasGifts();
+    this._clearModeOrbs();
     this.hazards.clear();
     for (const e of this.entities) {
       this.group.remove(e.rig.root);
@@ -1172,8 +1278,8 @@ export class MatchEngine {
     }
   }
 
-  _handleWeaponHitMonster(weaponSpec, dirX, dirZ, ownerId) {
-    const m = this.monsterEntity;
+  _handleWeaponHitMonster(weaponSpec, dirX, dirZ, ownerId, targetMonster = null) {
+    const m = targetMonster || this.monsterEntity;
     if (!m || !m.alive) return;
 
     // Fair Monster CC resistance (scales stronger as Monster grows Stages 1 -> 5 so 5 bots can't stunlock!)
@@ -1336,13 +1442,14 @@ export class MatchEngine {
     this.onHudUpdate({ type: 'hitPop', text, color, x: sx, y: sy });
   }
 
-  _applyElimination(victim, broadcast = true) {
-    if (!victim.alive || !this.monsterEntity) return;
+  _applyElimination(victim, broadcast = true, killer = null) {
+    if (!victim.alive) return;
     if (victim.isLocal && this.getAdminConfig?.()?.godMode) return;
+    const m = killer || this.monsterEntity;
+    if (!m) return;
     victim.alive = false;
     victim.rig.root.visible = false;
 
-    const m = this.monsterEntity;
     m.eliminations += 1;
     // Advance through 5 distinct visual growth stages!
     m.growthStage = Math.min(5, 1 + m.eliminations);
@@ -1382,27 +1489,29 @@ export class MatchEngine {
       });
     }
 
+    // Star Rush penalty: caught survivor drops 2 stars back onto the arena!
+    if (this.gameMode === 'star_rush' && this.teamStars >= 2) {
+      this.teamStars = Math.max(0, this.teamStars - 2);
+      this._spawnModeOrbs('star', 2, victim.pos);
+    }
+
     const remaining = this._countAliveSurvivors();
     this.onHudUpdate({
       type: 'elimination',
       survivorsAlive: remaining,
       growthStage: m.growthStage,
       stageTitle: st.title,
-      toast: `${victim.name} CAUGHT! STAGE ${m.growthStage}: ${st.title.toUpperCase()}!`,
+      toast: this.gameMode === 'infection'
+        ? `${victim.name} INFECTED!! NOW A SLIME!`
+        : `${victim.name} CAUGHT! STAGE ${m.growthStage}: ${st.title.toUpperCase()}!`,
     });
 
     if (this.onAlert) {
       if (remaining === 1 && !this.criticalAlerted) {
-        // Immediate red emergency warning-light alarm when ONLY ONE PLAYER IS LEFT!
         this.criticalAlerted = true;
         this.onAlert('lastOne', 'ONE PLAYER LEFT!');
-      } else {
-        this.onAlert('eliminated', 'SURVIVOR ELIMINATED!');
-        setTimeout(() => {
-          if (this.active && this.onAlert) {
-            this.onAlert('growing', m.growthStage >= 5 ? 'MUTATION DETECTED! APEX TITAN!' : 'THE MONSTER IS GROWING!');
-          }
-        }, 1150);
+      } else if (remaining > 1) {
+        this.onAlert('eliminated', this.gameMode === 'infection' ? 'SURVIVOR INFECTED!' : 'SURVIVOR ELIMINATED!');
       }
     }
 
@@ -1410,9 +1519,11 @@ export class MatchEngine {
 
     if (broadcast) this.network.sendMatchEvent({ kind: 'eliminate', victimId: victim.id });
 
-    if (victim.isLocal && remaining > 0) {
+    // INFECTION MODE: caught Survivor mutates into an Infected Slime Monster immediately!
+    if (this.gameMode === 'infection' && remaining > 0) {
+      this._infectSurvivor(victim);
+    } else if (victim.isLocal && remaining > 0) {
       if (victim.role === 'survivor' && !victim.reviveUsed) {
-        // Transform into playable Ghost Mode: fly through walls & collect 5 Soul Orbs for a 1-time comeback Revive!
         this._enterGhostMode(victim);
       } else {
         const nextAlive = this.entities.find((e) => e.role === 'survivor' && e.alive);
@@ -1422,6 +1533,47 @@ export class MatchEngine {
     }
 
     if (remaining <= 0) this._finishMatch('monster');
+  }
+
+  _infectSurvivor(e) {
+    this.group.remove(e.rig.root);
+    const mSpec = e.monsterSpec || MONSTERS[0];
+    const newRig = createMonsterRig(mSpec, e.hatId || 'none', e.skinSpec?.id || 'classic', e.auraId || 'none');
+    newRig.indicatorRing.visible = true;
+    newRig.indicatorRing.material.color.set(e.isLocal ? '#9cf018' : '#ff5978');
+    newRig.indicatorRing.material.opacity = e.isLocal ? 0.78 : 0.35;
+    newRig.root.position.copy(e.pos);
+    const revealHalo = this._buildRevealHalo(true);
+    newRig.root.add(revealHalo);
+    this.group.add(newRig.root);
+
+    e.rig = newRig;
+    e.revealHalo = revealHalo;
+    e.role = 'monster';
+    e.alive = true;
+    e.infected = true;
+    e.radius = 1.05;
+    e.growthStage = 1;
+    e.shieldTimer = 0;
+    e.snareTimer = 0;
+    e.slowTimer = 0;
+    e.speedBoostTimer = 1.6;
+    e.abilityMaxCd = mSpec.cooldown * (e.perk?.abilityCdMult || 1.0);
+    e.fireMaxCd = 2.0 * (e.perk?.fireCdMult || 1.0);
+    e.abilityCooldown = 0;
+    e.fireCooldown = 0;
+
+    this.particles.spawnShockwave(e.pos, { color: '#9cf018', maxScale: 5.5, duration: 0.55 });
+    this.particles.spawnBurst(e.pos, { count: 28, color: '#9cf018', confetti: true, speed: 7.4, scale: 1.15 });
+    this._emitComicPop(e.pos, 'INFECTED!!', '#9cf018');
+
+    if (e.isLocal) {
+      this.onHudUpdate({
+        type: 'infectedLocal',
+        charName: mSpec.name,
+        abilityName: mSpec.abilityName,
+      });
+    }
   }
 
   _clearSoulOrbs() {
@@ -1749,11 +1901,42 @@ export class MatchEngine {
     }
 
     let bestTarget = null;
-    let bestDist = localEnt.role === 'survivor' ? (localEnt.weaponSpec?.range || 16) + 5.0 : 20.0;
+    let bestDist =
+      this.gameMode === 'snowball_fight'
+        ? 17.5
+        : localEnt.role === 'survivor'
+        ? (localEnt.weaponSpec?.range || 16) + 5.0
+        : 20.0;
 
-    if (localEnt.role === 'survivor') {
-      const m = this.monsterEntity;
-      if (m && m.alive && (!m.disguiseTimer || espActive)) {
+    if (this.gameMode === 'snowball_fight') {
+      // Soft-range mobile auto-aim at nearest visible alive rival so touch players can dodge & throw snowballs smoothly!
+      for (const rival of this.entities) {
+        if (rival.id === localEnt.id || !rival.alive) continue;
+        const hidden = Boolean(rival.hiddenBush || rival.stealthTimer > 0 || rival.camouTimer > 0);
+        const d = localEnt.pos.distanceTo(rival.pos);
+        if (hidden && !espActive && d > 3.0) continue;
+        if (d < bestDist) {
+          bestTarget = rival;
+          bestDist = d;
+        }
+      }
+    } else if (this.gameMode === 'slime_brawl') {
+      // Auto-aim toward nearest rival slime (preferring smaller chompable targets when close!)
+      let bestScore = Infinity;
+      for (const rival of this.entities) {
+        if (rival.id === localEnt.id || !rival.alive) continue;
+        const d = localEnt.pos.distanceTo(rival.pos);
+        if (d > bestDist) continue;
+        const smallerBonus = (rival.brawlMass || 0) < (localEnt.brawlMass || 0) ? -4.5 : 0;
+        if (d + smallerBonus < bestScore) {
+          bestScore = d + smallerBonus;
+          bestTarget = rival;
+          bestDist = d;
+        }
+      }
+    } else if (localEnt.role === 'survivor') {
+      for (const m of this.entities) {
+        if (m.role !== 'monster' || !m.alive || (m.disguiseTimer && !espActive)) continue;
         const d = localEnt.pos.distanceTo(m.pos);
         if (d <= bestDist) {
           bestTarget = m;
@@ -1787,8 +1970,8 @@ export class MatchEngine {
       return null;
     }
 
-    // Gentle velocity lead for responsive mobile hits
-    const lead = localEnt.role === 'survivor' ? 0.14 : 0.08;
+    // Gentle velocity lead for responsive mobile hits (slightly softer in Snowball Fight so dodging stays fun)
+    const lead = this.gameMode === 'snowball_fight' ? 0.1 : localEnt.role === 'survivor' ? 0.14 : 0.08;
     const tx = bestTarget.pos.x + (bestTarget.vel?.x || 0) * lead;
     const tz = bestTarget.pos.z + (bestTarget.vel?.z || 0) * lead;
     const dx = tx - localEnt.pos.x;
@@ -1933,10 +2116,311 @@ export class MatchEngine {
     }
   }
 
-  _finishMatch(winner) {
+  _clearModeOrbs() {
+    while (this.modeOrbGroup.children.length) {
+      this.modeOrbGroup.remove(this.modeOrbGroup.children[0]);
+    }
+    this.modeOrbs = [];
+  }
+
+  _spawnModeOrbs(kind = 'jelly', count = 1, nearPos = null) {
+    const maxX = Math.max(8, this.arena.halfW - 4.5);
+    const maxZ = Math.max(8, this.arena.halfD - 4.5);
+    const jellyCols = ['#39f068', '#ff5cf4', '#ffe047', '#36d9ff', '#ff7a1a'];
+
+    for (let i = 0; i < count; i++) {
+      const p = new THREE.Vector3();
+      if (nearPos) {
+        const ang = Math.random() * Math.PI * 2;
+        p.set(
+          THREE.MathUtils.clamp(nearPos.x + Math.cos(ang) * 3.2, -maxX, maxX),
+          0,
+          THREE.MathUtils.clamp(nearPos.z + Math.sin(ang) * 3.2, -maxZ, maxZ)
+        );
+      } else {
+        p.set((Math.random() - 0.5) * 2 * maxX, 0, (Math.random() - 0.5) * 2 * maxZ);
+      }
+      this.arena.resolveCollision(p, 1.3);
+
+      const g = new THREE.Group();
+      g.position.set(p.x, 0, p.z);
+      let mesh;
+      if (kind === 'star') {
+        const mat = new THREE.MeshStandardMaterial({
+          color: '#ffe047',
+          emissive: '#ffaa00',
+          emissiveIntensity: 0.72,
+          roughness: 0.18,
+        });
+        mesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.58, 0), mat);
+        mesh.position.y = 1.05;
+        g.add(mesh);
+        const ring = new THREE.Mesh(
+          new THREE.RingGeometry(0.7, 1.05, 20),
+          new THREE.MeshBasicMaterial({ color: '#ffe047', transparent: true, opacity: 0.65, side: THREE.DoubleSide, depthWrite: false })
+        );
+        ring.rotation.x = -Math.PI / 2;
+        ring.position.y = 0.08;
+        g.add(ring);
+      } else {
+        const col = jellyCols[Math.floor(Math.random() * jellyCols.length)];
+        const mat = new THREE.MeshStandardMaterial({
+          color: col,
+          emissive: col,
+          emissiveIntensity: 0.5,
+          roughness: 0.2,
+        });
+        mesh = new THREE.Mesh(new THREE.SphereGeometry(0.52, 12, 10), mat);
+        mesh.scale.set(1.08, 0.88, 1.08);
+        mesh.position.y = 0.75;
+        g.add(mesh);
+      }
+      this.modeOrbGroup.add(g);
+      this.modeOrbs.push({ kind, x: p.x, z: p.z, group: g, mesh, t: Math.random() * 6 });
+    }
+  }
+
+  _handleSnowballHitPlayer(target, dirX, dirZ, ownerId) {
+    if (!target || !target.alive || target.shieldTimer > 0) return;
+    const attacker = this.entities.find((e) => e.id === ownerId);
+
+    target.knockVel.x += dirX * 11.5;
+    target.knockVel.z += dirZ * 11.5;
+    target.slowTimer = Math.max(target.slowTimer, 0.9);
+    target.slowFactor = Math.min(target.slowFactor, 0.65);
+    target.rig.triggerSquash?.(-9.5, 2.2);
+    target.snowHp = Math.max(0, (target.snowHp ?? 3) - 1);
+
+    this.particles.spawnBurst(target.pos, { count: 16, color: '#8ae8ff', speed: 5.5, scale: 0.9 });
+    this.particles.spawnShockwave(target.pos, { color: '#ffffff', maxScale: 3.4, duration: 0.32 });
+
+    if (attacker?.isLocal) {
+      this.localWeaponHits += 1;
+      this.sound.playHitImpact(false);
+      this._emitComicPop(target.pos, target.snowHp <= 0 ? '❄ KO!! +20c' : '❄ HIT!', '#36c9ff');
+    } else if (target.isLocal) {
+      this.sound.playBump();
+      this.sceneManager.cameraRig.addTrauma(0.28);
+      this._emitComicPop(target.pos, `❄ -1 HP (${target.snowHp}/3)`, '#ff4757');
+    }
+
+    if (target.snowHp <= 0) {
+      target.alive = false;
+      target.rig.root.visible = false;
+      target.respawnTimer = 2.2;
+      this.particles.spawnBurst(target.pos, { count: 32, confetti: true, speed: 7.5, scale: 1.2 });
+      this.sound.playFreeze();
+
+      if (attacker) {
+        attacker.snowKOs = (attacker.snowKOs || 0) + 1;
+        if (attacker.isLocal) {
+          this.localEliminations += 1;
+          this.localGiftCoins += 20;
+          this.sound.playCoin();
+          this.onHudUpdate({
+            type: 'toast',
+            text: `❄ KNOCKED OUT ${target.name.toUpperCase()}! (${attacker.snowKOs}/${this.snowKoGoal} KOs)`,
+          });
+        }
+        if (attacker.snowKOs >= this.snowKoGoal) {
+          this._finishMatch('snowball', attacker);
+          return;
+        }
+      }
+      if (target.isLocal) {
+        this.onHudUpdate({ type: 'toast', text: 'FROZEN OUT! RESPAWNING IN 2s...' });
+      }
+    }
+  }
+
+  _updateModeMechanics(dt) {
+    if (this.gameMode === 'slime_brawl') {
+      // Animate & collect glowing Energy Jellies -> grow Slime mass & stage!
+      for (let i = this.modeOrbs.length - 1; i >= 0; i--) {
+        const o = this.modeOrbs[i];
+        o.t += dt;
+        o.mesh.position.y = 0.72 + Math.sin(o.t * 4.2) * 0.16;
+        o.mesh.rotation.y += dt * 2.0;
+        let eater = null;
+        for (const e of this.entities) {
+          if (!e.alive) continue;
+          if (Math.hypot(e.pos.x - o.x, e.pos.z - o.z) <= e.radius + 0.95) {
+            eater = e;
+            break;
+          }
+        }
+        if (eater) {
+          this.modeOrbGroup.remove(o.group);
+          this.modeOrbs.splice(i, 1);
+          eater.brawlMass = (eater.brawlMass || 0) + 1;
+          const nextStage = Math.min(5, 1 + Math.floor(eater.brawlMass / 3));
+          if (nextStage > eater.growthStage) {
+            eater.growthStage = nextStage;
+            eater.rig.setGrowthStage(nextStage, true);
+            eater.radius = 1.05 * (1 + (nextStage - 1) * 0.17);
+            if (eater.isLocal) this.sound.playChompAndGrow(nextStage);
+          } else if (eater.isLocal) {
+            this.sound.playCoin();
+          }
+          if (eater.isLocal) {
+            this.localCoopActions += 1;
+            this._emitComicPop(eater.pos, `+1 MASS (${eater.brawlMass})`, '#ffe047');
+          }
+          this._spawnModeOrbs('jelly', 1);
+        }
+      }
+
+      // Quick 2.4s respawns for chomped Slimes in Slime Brawl!
+      for (const e of this.entities) {
+        if (!e.alive && e.respawnTimer > 0) {
+          e.respawnTimer = Math.max(0, e.respawnTimer - dt);
+          if (e.respawnTimer === 0) {
+            // Pick spawn point farthest from the biggest alive rival Slime
+            const biggest = this.entities
+              .filter((r) => r.alive && r.id !== e.id)
+              .sort((a, b) => (b.brawlMass || 0) - (a.brawlMass || 0))[0];
+            let bestSpawn = SURVIVOR_SPAWNS[Math.floor(Math.random() * SURVIVOR_SPAWNS.length)];
+            if (biggest) {
+              let bestD = -1;
+              for (const sp of SURVIVOR_SPAWNS) {
+                const d = Math.hypot(sp[0] - biggest.pos.x, sp[1] - biggest.pos.z);
+                if (d > bestD) { bestD = d; bestSpawn = sp; }
+              }
+            }
+            e.pos.set(bestSpawn[0], 0, bestSpawn[1]);
+            e.alive = true;
+            e.shieldTimer = 2.2;
+            e.stunTimer = 0;
+            e.snareTimer = 0;
+            e.growthStage = Math.min(5, 1 + Math.floor((e.brawlMass || 0) / 3));
+            e.rig.setGrowthStage(e.growthStage, false);
+            e.radius = 1.05 * (1 + (e.growthStage - 1) * 0.17);
+            e.rig.root.visible = true;
+            e.rig.root.position.copy(e.pos);
+            this.particles.spawnShockwave(e.pos, { color: '#42e87a', maxScale: 4.2, duration: 0.45 });
+            this.particles.spawnBurst(e.pos, { count: 16, color: '#ffe047', speed: 5.5 });
+            if (e.isLocal) {
+              this.sound.playCoin();
+              this.onHudUpdate({ type: 'toast', text: 'SLIME RESPAWNED! 2s SHIELD ACTIVE!' });
+            }
+          }
+        }
+      }
+
+      // Slime-vs-Slime chomp! Bigger slime eats smaller slime (eaten slime respawns in 2.4s!)
+      if (this.introFreeze <= 0) {
+        const aliveSlimes = this.entities.filter((e) => e.alive);
+        for (let i = 0; i < aliveSlimes.length; i++) {
+          const a = aliveSlimes[i];
+          if (!a.alive) continue;
+          for (let j = i + 1; j < aliveSlimes.length; j++) {
+            const b = aliveSlimes[j];
+            if (!b.alive) continue;
+            const d = a.pos.distanceTo(b.pos);
+            if (d <= a.radius + b.radius * 0.85) {
+              const aPower = (a.brawlMass || 0) + (a.lungeTimer > 0 ? 1.2 : 0);
+              const bPower = (b.brawlMass || 0) + (b.lungeTimer > 0 ? 1.2 : 0);
+              if (Math.abs(aPower - bPower) < 0.75) continue;
+              const big = aPower > bPower ? a : b;
+              const small = aPower > bPower ? b : a;
+              if (small.shieldTimer > 0) continue;
+              if (small.isLocal && this.getAdminConfig?.()?.godMode) continue;
+
+              small.alive = false;
+              small.rig.root.visible = false;
+              small.respawnTimer = 2.4;
+              small.brawlMass = Math.max(0, Math.floor((small.brawlMass || 0) * 0.35));
+
+              big.brawlMass = (big.brawlMass || 0) + 3;
+              big.eliminations += 1;
+              big.growthStage = Math.min(5, 1 + Math.floor(big.brawlMass / 3));
+              big.rig.setGrowthStage(big.growthStage, true);
+              big.radius = 1.05 * (1 + (big.growthStage - 1) * 0.17);
+
+              this.particles.spawnBurst(small.pos, { count: 34, confetti: true, speed: 8.0, scale: 1.2 });
+              this.particles.spawnShockwave(big.pos, { color: '#ff5e14', maxScale: 6.0, duration: 0.5 });
+              this.sound.playChompAndGrow(big.growthStage);
+              if (this.modeOrbs.length < 18) this._spawnModeOrbs('jelly', 2);
+
+              if (big.isLocal) {
+                this.localEliminations += 1;
+                this.localGiftCoins += 20;
+                this._emitComicPop(small.pos, 'CHOMPED RIVAL!! +3', '#ffe047');
+              } else if (small.isLocal) {
+                this.sceneManager.cameraRig.addTrauma(0.35);
+                this._emitComicPop(small.pos, 'EATEN! RESPAWNING...', '#ff4757');
+                this.onHudUpdate({ type: 'toast', text: `CHOMPED BY ${big.name.toUpperCase()}! RESPAWNING IN 2s...` });
+              }
+              this.onHudUpdate({
+                type: 'elimination',
+                survivorsAlive: 6,
+                growthStage: this.localEntity?.growthStage || 1,
+                stageTitle: getGrowthStage(this.localEntity?.growthStage || 1).title,
+                toast: `${big.name} CHOMPED ${small.name}! (+3 MASS)`,
+              });
+            }
+          }
+        }
+      }
+    } else if (this.gameMode === 'star_rush') {
+      // Animate & collect Golden Stars for Survivors!
+      for (let i = this.modeOrbs.length - 1; i >= 0; i--) {
+        const o = this.modeOrbs[i];
+        o.t += dt;
+        o.mesh.position.y = 1.05 + Math.sin(o.t * 3.8) * 0.2;
+        o.mesh.rotation.y += dt * 2.8;
+        let picker = null;
+        for (const e of this.entities) {
+          if (e.role !== 'survivor' || !e.alive) continue;
+          if (Math.hypot(e.pos.x - o.x, e.pos.z - o.z) <= e.radius + 1.1) {
+            picker = e;
+            break;
+          }
+        }
+        if (picker) {
+          this.modeOrbGroup.remove(o.group);
+          this.modeOrbs.splice(i, 1);
+          this.teamStars += 1;
+          this.particles.spawnBurst(new THREE.Vector3(o.x, 1.0, o.z), { count: 16, color: '#ffe047', confetti: true, speed: 5.5, scale: 0.9 });
+          if (picker.isLocal) {
+            this.localCoopActions += 1;
+            this.localGiftCoins += 10;
+            this.sound.playCoin();
+            this._emitComicPop(picker.pos, `★ ${this.teamStars}/${this.starGoal}!`, '#ffe047');
+          }
+          if (this.teamStars >= this.starGoal) {
+            this._finishMatch('survivors');
+            return;
+          }
+          if (this.modeOrbs.length < 8) this._spawnModeOrbs('star', 1);
+        }
+      }
+    } else if (this.gameMode === 'snowball_fight') {
+      // Quick 2.2s respawns for knocked-out Snowball Fight players!
+      for (const e of this.entities) {
+        if (!e.alive && e.respawnTimer > 0) {
+          e.respawnTimer = Math.max(0, e.respawnTimer - dt);
+          if (e.respawnTimer === 0) {
+            const [sx, sz] = SURVIVOR_SPAWNS[Math.floor(Math.random() * SURVIVOR_SPAWNS.length)];
+            e.pos.set(sx, 0, sz);
+            e.alive = true;
+            e.snowHp = 3;
+            e.shieldTimer = 1.8;
+            e.rig.root.visible = true;
+            e.rig.root.position.copy(e.pos);
+            this.particles.spawnShockwave(e.pos, { color: '#36c9ff', maxScale: 4.0, duration: 0.4 });
+            if (e.isLocal) this.onHudUpdate({ type: 'toast', text: 'BACK IN THE SNOWBALL FIGHT!' });
+          }
+        }
+      }
+    }
+  }
+
+  _finishMatch(winner, ffaWinnerEnt = null) {
     if (!this.active || this.celebration) return;
     this.active = false;
     this.sound.setMatchIntensity(false);
+    this.arena.forceSnow = false;
     this.sceneManager.cameraRig.setProximityShake(0);
     this.aimIndicator.visible = false;
     this.autoAimRing.visible = false;
@@ -1945,13 +2429,25 @@ export class MatchEngine {
     this.coopLine.visible = false;
     this._clearSoulOrbs();
     this._clearXmasGifts();
+    this._clearModeOrbs();
 
-    const elapsedSec = Math.min(MATCH_DURATION, Math.round((performance.now() - this.matchStartTime) / 1000));
+    const modeSpec = getGameModeById(this.gameMode);
+    const elapsedSec = Math.min(modeSpec.duration || MATCH_DURATION, Math.round((performance.now() - this.matchStartTime) / 1000));
     const localRole = this.localEntity?.role || 'survivor';
-    // Fix: winner is 'monster' or 'survivors' (plural) while localRole is 'monster' or 'survivor' (singular)!
+
+    let resolvedFfaWinner = ffaWinnerEnt;
+    if (winner === 'brawl' && !resolvedFfaWinner) {
+      resolvedFfaWinner = [...this.entities]
+        .sort((a, b) => (b.brawlMass || 0) - (a.brawlMass || 0) || (b.eliminations || 0) - (a.eliminations || 0))[0];
+    } else if (winner === 'snowball' && !resolvedFfaWinner) {
+      resolvedFfaWinner = [...this.entities].sort((a, b) => (b.snowKOs || 0) - (a.snowKOs || 0))[0];
+    }
+
     const localWon =
-      (winner === 'monster' && localRole === 'monster') ||
-      (winner === 'survivors' && localRole === 'survivor');
+      winner === 'brawl' || winner === 'snowball'
+        ? Boolean(resolvedFfaWinner && resolvedFfaWinner.id === this.localEntity?.id)
+        : (winner === 'monster' && localRole === 'monster') ||
+          (winner === 'survivors' && localRole === 'survivor');
     const survivorsAlive = this._countAliveSurvivors();
 
     let coinsEarned = localWon ? 105 : 50;
@@ -1960,9 +2456,12 @@ export class MatchEngine {
       coinsEarned = Math.round(coinsEarned * this.localEntity.perk.coinMult);
     }
 
-    const winners = winner === 'monster'
-      ? (this.monsterEntity ? [this.monsterEntity] : [])
-      : this.entities.filter((e) => e.role === 'survivor' && e.alive);
+    const winners =
+      winner === 'brawl' || winner === 'snowball'
+        ? (resolvedFfaWinner ? [resolvedFfaWinner] : [])
+        : winner === 'monster'
+        ? this.entities.filter((e) => e.role === 'monster')
+        : this.entities.filter((e) => e.role === 'survivor' && e.alive);
 
     // Reveal winning characters clearly (even if they were hidden in a bush) so we can watch them jump & cheer!
     for (const w of winners) {
@@ -1974,9 +2473,12 @@ export class MatchEngine {
       w.rig.setExpression?.('happy');
     }
 
-    const focusEnt = winner === 'monster'
-      ? this.monsterEntity
-      : (this.localEntity?.role === 'survivor' && this.localEntity?.alive ? this.localEntity : winners[0]) || this.localEntity;
+    const focusEnt =
+      winner === 'brawl' || winner === 'snowball'
+        ? resolvedFfaWinner || this.localEntity
+        : winner === 'monster'
+        ? (this.localEntity?.role === 'monster' ? this.localEntity : winners[0]) || this.monsterEntity
+        : (this.localEntity?.role === 'survivor' && this.localEntity?.alive ? this.localEntity : winners[0]) || this.localEntity;
 
     if (focusEnt) {
       this.sceneManager.cameraRig.setMode('results', false);
@@ -2009,6 +2511,11 @@ export class MatchEngine {
 
     const summary = {
       winner,
+      gameMode: this.gameMode,
+      modeName: modeSpec.name,
+      ffaWinnerName: resolvedFfaWinner?.name || '',
+      ffaWinnerScore: winner === 'snowball' ? (resolvedFfaWinner?.snowKOs || 0) : (resolvedFfaWinner?.brawlMass || 0),
+      teamStars: this.teamStars,
       playMode: this.playMode || 'casual',
       localRole,
       localWon,
@@ -2075,14 +2582,24 @@ export class MatchEngine {
       }
 
       const headline =
-        c.winner === 'monster'
-          ? `${(this.monsterEntity?.name || 'MONSTER').toUpperCase()} WINS!`
+        c.winner === 'brawl'
+          ? `${(c.winners[0]?.name || 'SLIME').toUpperCase()} WINS!`
+          : c.winner === 'snowball'
+          ? `${(c.winners[0]?.name || 'CHAMP').toUpperCase()} WINS!`
+          : c.winner === 'monster'
+          ? (this.gameMode === 'infection' ? 'INFECTED WIN!' : `${(this.monsterEntity?.name || 'MONSTER').toUpperCase()} WINS!`)
           : c.winners.length === 1
           ? `${c.winners[0].name.toUpperCase()} WINS!`
           : 'SURVIVORS WIN!';
       const sub =
-        c.winner === 'monster'
-          ? `MONSTER VICTORY · STAGE ${this.monsterEntity?.growthStage || 1}`
+        c.winner === 'brawl'
+          ? `SLIME BRAWL CHAMPION · MASS ${c.winners[0]?.brawlMass || 0}`
+          : c.winner === 'snowball'
+          ? `❄ SNOWBALL CHAMPION · ${c.winners[0]?.snowKOs || 0} KOs`
+          : c.winner === 'monster'
+          ? (this.gameMode === 'infection' ? 'ALL SURVIVORS INFECTED!' : `MONSTER VICTORY · STAGE ${this.monsterEntity?.growthStage || 1}`)
+          : this.gameMode === 'star_rush' && this.teamStars >= this.starGoal
+          ? `STAR RUSH · ${this.starGoal}/${this.starGoal} STARS COLLECTED!`
           : `${c.winners.length} SURVIVOR${c.winners.length === 1 ? '' : 'S'} ESCAPED!`;
 
       this.onHudUpdate({
@@ -2202,6 +2719,54 @@ export class MatchEngine {
 
   _updateBotMonster(m, dt) {
     const skill = this.aiSkill; // 0.14 (rookie) .. 1.0 (master)
+
+    // SLIME BRAWL AI: flee bigger slimes, chase smaller slimes, or eat nearest Energy Jelly!
+    if (this.gameMode === 'slime_brawl') {
+      let threat = null;
+      let threatDist = 9.5;
+      let prey = null;
+      let preyDist = 14.0;
+      for (const other of this.entities) {
+        if (other === m || !other.alive) continue;
+        const d = m.pos.distanceTo(other.pos);
+        if ((other.brawlMass || 0) > (m.brawlMass || 0) + 1 && d < threatDist) {
+          threatDist = d;
+          threat = other;
+        } else if ((m.brawlMass || 0) > (other.brawlMass || 0) + 1 && d < preyDist) {
+          preyDist = d;
+          prey = other;
+        }
+      }
+      if (threat) {
+        const dx = m.pos.x - threat.pos.x;
+        const dz = m.pos.z - threat.pos.z;
+        const len = Math.hypot(dx, dz) || 1;
+        m.aimDir = { x: dx / len, z: dz / len };
+        return this._steerBotSmoothly(m, dx / len, dz / len, dt);
+      }
+      if (prey) {
+        const dx = prey.pos.x - m.pos.x;
+        const dz = prey.pos.z - m.pos.z;
+        const len = Math.hypot(dx, dz) || 1;
+        m.aimDir = { x: dx / len, z: dz / len };
+        if (preyDist < 3.6 + m.radius && m.fireCooldown <= 0 && Math.random() < 0.14) this._triggerMonsterChomp(m);
+        return this._steerBotSmoothly(m, dx / len, dz / len, dt);
+      }
+      let bestOrb = null;
+      let bestOrbD = Infinity;
+      for (const o of this.modeOrbs) {
+        const d = Math.hypot(o.x - m.pos.x, o.z - m.pos.z);
+        if (d < bestOrbD) { bestOrbD = d; bestOrb = o; }
+      }
+      if (bestOrb) {
+        const dx = bestOrb.x - m.pos.x;
+        const dz = bestOrb.z - m.pos.z;
+        const len = Math.hypot(dx, dz) || 1;
+        m.aimDir = { x: dx / len, z: dz / len };
+        return this._steerBotSmoothly(m, dx / len, dz / len, dt);
+      }
+    }
+
     const candidates = [];
     for (const e of this.entities) {
       if (e.role !== 'survivor' || !e.alive) continue;
@@ -2271,9 +2836,47 @@ export class MatchEngine {
   }
 
   _updateBotSurvivor(s, dt) {
-    const m = this.monsterEntity;
-    if (!m) return { x: 0, z: 0 };
     const skill = this.aiSkill; // 0.14 (rookie) .. 1.0 (master)
+
+    // SNOWBALL FIGHT FFA AI: strafe & fire snowballs at nearest alive rival!
+    if (this.gameMode === 'snowball_fight') {
+      let target = null;
+      let bestD = Infinity;
+      for (const other of this.entities) {
+        if (other === s || !other.alive) continue;
+        const d = s.pos.distanceTo(other.pos);
+        if (d < bestD) { bestD = d; target = other; }
+      }
+      if (target) {
+        const dx = target.pos.x - s.pos.x;
+        const dz = target.pos.z - s.pos.z;
+        const len = Math.hypot(dx, dz) || 1;
+        s.aimDir = { x: dx / len, z: dz / len };
+        if (bestD < 14.5 && s.fireCooldown <= 0 && Math.random() < 0.06 + skill * 0.12) {
+          this._fireSurvivorWeapon(s);
+        }
+        if (bestD < 6.5 && s.abilityCooldown <= 0 && Math.random() < 0.04) {
+          this._activateSurvivorAbility(s);
+        }
+        // Maintain agile mid-range strafing distance (~7.5u)
+        const dirSign = bestD < 6.5 ? -0.7 : bestD > 11.5 ? 0.8 : 0.1;
+        const fx = (dx / len) * dirSign + (-dz / len) * 0.75 * s.aiStrafeSign;
+        const fz = (dz / len) * dirSign + (dx / len) * 0.75 * s.aiStrafeSign;
+        return this._steerBotSmoothly(s, fx, fz, dt);
+      }
+      return { x: 0, z: 0 };
+    }
+
+    // Pick nearest alive monster (works for 1v5, Infection, AND 2v4 Chaos!)
+    let m = this.monsterEntity;
+    let bestMonD = Infinity;
+    for (const ent of this.entities) {
+      if (ent.role === 'monster' && ent.alive) {
+        const md = s.pos.distanceTo(ent.pos);
+        if (md < bestMonD) { bestMonD = md; m = ent; }
+      }
+    }
+    if (!m) return { x: 0, z: 0 };
 
     // High-skill Survivor Bots proactively shoot incoming Monster Boom-Bot decoys before they explode!
     if (skill >= 0.45 && s.fireCooldown <= 0) {
@@ -2350,7 +2953,15 @@ export class MatchEngine {
       s.aiTimer = 2.6 - skill * 0.6 + Math.random() * 1.9;
       s.aiStrafeSign = Math.random() < 0.5 ? 1 : -1;
       const readyBeacon = this.arena.beacons.find((b) => b.cooldown <= 0);
-      if (readyBeacon && (s.survivorSpec.id === 'mechanic' || Math.random() < 0.24 + skill * 0.44)) {
+      if (this.gameMode === 'star_rush' && this.modeOrbs.length > 0) {
+        let bestStar = this.modeOrbs[0];
+        let bestSD = Infinity;
+        for (const o of this.modeOrbs) {
+          const d = Math.hypot(o.x - s.pos.x, o.z - s.pos.z);
+          if (d < bestSD) { bestSD = d; bestStar = o; }
+        }
+        s.aiTarget.set(bestStar.x, 0, bestStar.z);
+      } else if (readyBeacon && (s.survivorSpec.id === 'mechanic' || Math.random() < 0.24 + skill * 0.44)) {
         s.aiTarget.set(readyBeacon.x, 0, readyBeacon.z);
       } else {
         // Pick a bush far from current bush and away from monster
@@ -2395,7 +3006,9 @@ export class MatchEngine {
         if (this.onAlert) this.onAlert('critical', 'FINAL 15s! ALL PLAYERS REVEALED!');
       }
       if (this.timeRemaining <= 0) {
-        this._finishMatch('survivors');
+        if (this.gameMode === 'slime_brawl') this._finishMatch('brawl');
+        else if (this.gameMode === 'snowball_fight') this._finishMatch('snowball');
+        else this._finishMatch('survivors');
         return;
       }
     }
@@ -2618,6 +3231,7 @@ export class MatchEngine {
         : e.survivorSpec.speed;
 
       if (e.perk?.speedMult) speed *= e.perk.speedMult;
+      if (this.gameMode === 'turbo_chaos') speed *= 1.2;
       if (e.isLocal && admin.active && admin.speedBoost) speed *= 1.55;
       if (e.isBot) speed *= (0.78 + this.aiSkill * 0.24); // Rank + Win-Rate scaled bot pacing!
       if (e.speedBoostTimer > 0) speed *= 1.44;
@@ -2816,8 +3430,10 @@ export class MatchEngine {
       this._updateGhostMode(dt, localAbility, localFire);
     }
 
-    // Update seamless in-match Holiday Mystery Gift Boxes!
+    // Update seamless in-match Holiday Mystery Gift Boxes & Mode Collectibles!
     this._updateXmasGifts(dt);
+    this._updateModeMechanics(dt);
+    if (!this.active) return;
 
     // Update all 3D hazards, projectiles, traps, decoys, and footprints!
     this.hazards.update(dt, {
@@ -2826,7 +3442,9 @@ export class MatchEngine {
       entities: this.entities,
       trackerSenseActive: this.trackerSenseTimer > 0,
       localIsTracker: this.localEntity?.survivorSpec?.id === 'tracker',
-      onWeaponHitMonster: (wSpec, dx, dz, ownerId) => this._handleWeaponHitMonster(wSpec, dx, dz, ownerId),
+      snowballFfa: this.gameMode === 'snowball_fight',
+      onWeaponHitMonster: (wSpec, dx, dz, ownerId, targetMon) => this._handleWeaponHitMonster(wSpec, dx, dz, ownerId, targetMon),
+      onSnowballHitPlayer: (target, dx, dz, ownerId) => this._handleSnowballHitPlayer(target, dx, dz, ownerId),
       onHazardHitSurvivor: (s, kind) => this._handleHazardHitSurvivor(s, kind),
       onDecoyExplodeHit: (target) => {
         if (target.isLocal) {
@@ -2865,20 +3483,25 @@ export class MatchEngine {
       this.coopLine.visible = false;
     }
 
-    // Monster catch check (generous, responsive chomp & lunge hitbox!)
+    // Multi-Monster catch check (supports Classic 1v5, Infection multi-monsters, 2v4 Chaos & Star Rush!)
     const m = this.monsterEntity;
-    if (m && m.alive && m.stunTimer <= 0 && m.bubbledTimer <= 0 && this.introFreeze <= 0 && (m.isLocal || (m.isBot && this.network.isHost()))) {
-      const catchReach = m.radius + (m.lungeTimer > 0 || m.burnyDashTimer > 0 ? 1.28 : 0.85);
-      for (const s of this.entities) {
-        if (s.role !== 'survivor' || !s.alive || s.vaultTimer > 0.15) continue;
-        if (m.pos.distanceTo(s.pos) <= catchReach + s.radius * 0.72) {
-          if (s.shieldTimer > 0) {
-            this._blockWithShield(s, m);
-          } else {
-            this._applyElimination(s, true);
+    if (this.gameMode !== 'slime_brawl' && this.gameMode !== 'snowball_fight' && this.introFreeze <= 0) {
+      for (const mon of this.entities) {
+        if (mon.role !== 'monster' || !mon.alive || mon.stunTimer > 0 || mon.bubbledTimer > 0) continue;
+        if (!(mon.isLocal || (mon.isBot && this.network.isHost()))) continue;
+        const catchReach = mon.radius + (mon.lungeTimer > 0 || mon.burnyDashTimer > 0 ? 1.28 : 0.85);
+        for (const s of this.entities) {
+          if (s.role !== 'survivor' || !s.alive || s.vaultTimer > 0.15) continue;
+          if (mon.pos.distanceTo(s.pos) <= catchReach + s.radius * 0.72) {
+            if (s.shieldTimer > 0) {
+              this._blockWithShield(s, mon);
+            } else {
+              this._applyElimination(s, true, mon);
+            }
+            break;
           }
-          break;
         }
+        if (!this.active) break;
       }
     }
 
@@ -3002,6 +3625,14 @@ export class MatchEngine {
         soulTarget: le?.soulTarget || 5,
         statusText: inGhost
           ? `GHOST MODE · COLLECT SOUL ORBS TO REVIVE (${le.soulCollected || 0}/${le.soulTarget || 5})`
+          : !le?.alive && (le?.respawnTimer || 0) > 0
+          ? `RESPAWNING IN ${Math.max(1, Math.ceil(le.respawnTimer))}s...`
+          : this.gameMode === 'star_rush'
+          ? `★ STAR RUSH · TEAM STARS: ${this.teamStars}/${this.starGoal}`
+          : this.gameMode === 'slime_brawl'
+          ? `👑 SLIME BRAWL · MASS: ${le?.brawlMass || 0} · STAGE ${le?.growthStage || 1}`
+          : this.gameMode === 'snowball_fight'
+          ? `❄ SNOWBALL FIGHT · KOs: ${le?.snowKOs || 0}/${this.snowKoGoal} · HP: ${'♥'.repeat(Math.max(0, le?.snowHp ?? 0))}`
           : le?.snareTimer > 0
           ? 'SNARED!'
           : le?.bubbledTimer > 0

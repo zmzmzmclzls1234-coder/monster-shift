@@ -16,6 +16,8 @@
   <link rel="modulepreload" href="./src/models/ArenaBuilder.js" />
   <link rel="modulepreload" href="./src/models/CharacterFactory.js" />
   <link rel="modulepreload" href="./src/models/SoftBodySlime.js" />
+  <link rel="modulepreload" href="./src/audio/SoundManager.js" />
+  <link rel="modulepreload" href="./src/game/HazardSystem.js" />
   <link rel="modulepreload" href="./src/game/MatchEngine.js" />
   <link rel="modulepreload" href="./src/ui/UIManager.js" />
 
@@ -98,7 +100,6 @@
       45% { transform: translateY(-20px) scale(0.92, 1.12); }
     }
   </style>
-  <link rel="modulepreload" href="./vendor/three.module.min.js" />
 </head>
 <body>
   <!-- INSTANT 0ms CARTOON LOADING SCREEN -->
@@ -192,6 +193,7 @@
       <div id="intro-logo-pop" class="intro-logo-pop hidden">
         <div class="logo-wordmark">MONSTER<br /><span>SHIFT</span></div>
       </div>
+      <button id="btn-intro-play-now" class="intro-play-now-btn" type="button">PLAY NOW!</button>
     </div>
 
     <!-- LOBBY OVERLAY (STRICTLY 4 MAIN BUTTONS + NON-INTERACTIVE CHROME & SETTINGS) -->
@@ -211,7 +213,7 @@
             <span class="status-dot"></span>
             <span id="lobby-match-prog-text">REWARD 0/3</span>
           </div>
-          <div id="lobby-net-pill" class="status-pill">
+          <div id="lobby-net-pill" class="status-pill clickable-pill" role="button" tabindex="0" title="Open Mode & Party">
             <span id="lobby-net-text">PARTY PARK · 1/6</span>
           </div>
         </div>
@@ -247,9 +249,15 @@
           <span class="btn-label">REWARDS</span>
           <span id="rewards-badge" class="notif-badge hidden">!</span>
         </button>
-        <button id="btn-play" class="dock-btn btn-play" type="button">
-          <span class="btn-label">PLAY</span>
-        </button>
+        <div class="play-btn-wrap">
+          <button id="btn-mode-party" class="mode-party-pill" type="button" title="Switch Casual/Ranked & Party">
+            <span id="mode-party-label">CASUAL · ROULETTE ▾</span>
+          </button>
+          <button id="btn-play" class="dock-btn btn-play" type="button">
+            <span class="btn-label">PLAY</span>
+            <span id="play-mode-sub" class="play-mode-sub">RANDOM MODE</span>
+          </button>
+        </div>
       </nav>
     </div>
 
@@ -373,6 +381,50 @@
       </div>
     </div>
 
+    <!-- SNAPPY CASUAL MODE ROULETTE OVERLAY (~1.6s · MONSTER SHIFT CARTOON THEME) -->
+    <div id="mode-roulette-overlay" class="roulette-overlay hidden" role="dialog" aria-modal="true" aria-label="Mode Roulette">
+      <div class="roulette-rays" aria-hidden="true"></div>
+      <div class="roulette-card">
+        <div class="roulette-mascot-wrap" aria-hidden="true">
+          <svg class="roulette-mascot" viewBox="0 0 100 76" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 66C12 34 26 14 50 14C74 14 88 34 88 66C88 73 72 74 50 74C28 74 12 73 12 66Z" fill="#42E87A" stroke="#14192B" stroke-width="6.5"/>
+            <ellipse cx="34" cy="30" rx="9" ry="5" transform="rotate(-18 34 30)" fill="#B4FFCA"/>
+            <circle cx="36" cy="46" r="9.5" fill="#FFFFFF" stroke="#14192B" stroke-width="4.5"/>
+            <circle cx="64" cy="46" r="9.5" fill="#FFFFFF" stroke="#14192B" stroke-width="4.5"/>
+            <circle cx="37.5" cy="46" r="4.8" fill="#14192B"/>
+            <circle cx="65.5" cy="46" r="4.8" fill="#14192B"/>
+            <circle cx="39.5" cy="43.5" r="2" fill="#FFFFFF"/>
+            <circle cx="67.5" cy="43.5" r="2" fill="#FFFFFF"/>
+            <ellipse cx="24" cy="56" rx="5.5" ry="3.2" fill="#FF7FA8"/>
+            <ellipse cx="76" cy="56" rx="5.5" ry="3.2" fill="#FF7FA8"/>
+            <path d="M43 58Q50 65 57 58" stroke="#14192B" stroke-width="4.8" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="roulette-ribbon">
+          <span class="roulette-ribbon-text">MODE ROULETTE</span>
+        </div>
+        <div class="roulette-viewport">
+          <div class="roulette-peg-row top" aria-hidden="true">
+            <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+          </div>
+          <svg id="roulette-pointer-top" class="roulette-pointer top" viewBox="0 0 34 24" aria-hidden="true">
+            <path d="M4 3H30L17 21L4 3Z" fill="#FFE047" stroke="#14192B" stroke-width="4" stroke-linejoin="round"/>
+          </svg>
+          <div id="roulette-strip" class="roulette-strip"></div>
+          <svg id="roulette-pointer-bot" class="roulette-pointer bottom" viewBox="0 0 34 24" aria-hidden="true">
+            <path d="M4 21H30L17 3L4 21Z" fill="#FFE047" stroke="#14192B" stroke-width="4" stroke-linejoin="round"/>
+          </svg>
+          <div class="roulette-peg-row bottom" aria-hidden="true">
+            <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+          </div>
+        </div>
+        <div class="roulette-footer">
+          <div id="roulette-result-name" class="roulette-result-name">SPINNING...</div>
+          <div id="roulette-result-desc" class="roulette-result-desc">Random map + surprise mode!</div>
+        </div>
+      </div>
+    </div>
+
     <!-- GRAND RANK-UP CELEBRATION OVERLAY -->
     <div id="rankup-overlay" class="rankup-overlay hidden" role="dialog" aria-modal="true">
       <div class="rankup-rays" aria-hidden="true"></div>
@@ -402,6 +454,20 @@
         <span id="tut-callout-text">CLICK THIS!</span>
         <button id="btn-tut-skip" class="tut-skip-btn" type="button" aria-label="Skip Guide" title="Skip Guide">✕</button>
       </div>
+    </div>
+
+    <!-- GLOBAL ADMIN ABUSE 30% TOP BANNER (VISIBLE ACROSS LOBBY, MATCH & RESULTS) -->
+    <div id="admin-broadcast-banner" class="admin-broadcast-banner hidden" aria-live="assertive" role="status">
+      <div class="abb-inner">
+        <div id="abb-kicker" class="abb-kicker">★ ADMIN ANNOUNCEMENT ★</div>
+        <div id="abb-text" class="abb-text"></div>
+        <div id="abb-sub" class="abb-sub hidden"></div>
+      </div>
+    </div>
+
+    <!-- ACTIVE GLOBAL COIN MULTIPLIER EVENT PILL -->
+    <div id="live-event-pill" class="live-event-pill hidden" aria-live="polite">
+      <span id="live-event-text">🔥 2X COIN EVENT · 10:00</span>
     </div>
 
     <!-- LANDSCAPE-ONLY ROTATE DEVICE OVERLAY -->

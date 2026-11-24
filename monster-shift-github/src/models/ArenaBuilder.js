@@ -825,7 +825,11 @@ export class ArenaBuilder {
 
   update(dt, elapsed) {
     if (this.snowPoints) {
-      const showSnow = Boolean((this.pedestalGroup?.visible && isChristmasEventActive()) || this.currentMapId === 'frost_island');
+      const showSnow = Boolean(
+        this.forceSnow ||
+        (this.pedestalGroup?.visible && isChristmasEventActive()) ||
+        this.currentMapId === 'frost_island'
+      );
       this.snowPoints.visible = showSnow;
       if (showSnow) {
         const pos = this.snowPoints.geometry.attributes.position;

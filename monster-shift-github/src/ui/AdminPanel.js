@@ -14,14 +14,29 @@ export class AdminPanel {
     this._drag = null;
     this._statsPollTimer = null;
     this._statsRequestedOnce = false;
+    this._eventMult = 2;
+    this._eventMins = 10;
 
     this._buildDom();
-    this.profile.subscribe(() => this.sync());
+    this.profile.subscribe(() => {
+      // Never wipe text inputs inside ADMIN.EXE while the admin is actively typing!
+      const active = document.activeElement;
+      if (active && this.panel?.contains(active) && active.tagName === 'INPUT') return;
+      this.sync();
+    });
     this.network?.subscribe((evt) => {
-      if (evt.type === 'server_stats' || evt.type === 'status' || evt.type === 'ping') {
+      if (evt.type === 'server_stats' || evt.type === 'status' || evt.type === 'ping' || evt.type === 'admin_event_state') {
         if (!this.minimized && this.profile.isAdminUnlocked()) {
           this._patchLiveTelemetry();
+          this._patchLiveEventStatus();
         }
+      } else if (evt.type === 'admin_ack') {
+        const suffix = evt.localOnly ? ' (LOCAL · PUSH server.js!)' : ` (${evt.reached || 1} ONLINE)`;
+        if (evt.action === 'broadcast') this.log(`SENT GLOBAL MSG${suffix}`);
+        else if (evt.action === 'grant_coins') this.log(`GAVE +${evt.amount}c TO ALL${suffix}`);
+        else if (evt.action === 'start_event') this.log(`STARTED ${evt.coinMultiplier}X EVENT${suffix}`);
+        else if (evt.action === 'stop_event') this.log(`STOPPED COIN EVENT${suffix}`);
+        this._patchLiveEventStatus();
       }
     });
     this.sync();
@@ -195,6 +210,25 @@ export class AdminPanel {
     if (slot) slot.innerHTML = this._formatTelemetryHtml();
   }
 
+  _formatEventStatusHtml() {
+    const ev = this.network?.getLiveEvent?.();
+    if (ev && ev.coinMultiplier > 1 && ev.remainingMs > 0) {
+      const remSec = Math.max(0, Math.ceil(ev.remainingMs / 1000));
+      const mm = String(Math.floor(remSec / 60)).padStart(2, '0');
+      const ss = String(remSec % 60).padStart(2, '0');
+      return `<span class="adm-ev-live">● LIVE: ${ev.coinMultiplier}X COINS (${mm}:${ss} LEFT)</span>`;
+    }
+    return `<span class="adm-ev-idle">NO ACTIVE COIN EVENT</span>`;
+  }
+
+  _patchLiveEventStatus() {
+    const slot = this.panel?.querySelector('#adm-event-status');
+    if (slot) slot.innerHTML = this._formatEventStatusHtml();
+    const stopBtn = this.panel?.querySelector('#adm-stop-event');
+    const ev = this.network?.getLiveEvent?.();
+    if (stopBtn) stopBtn.disabled = !(ev && ev.coinMultiplier > 1 && ev.remainingMs > 0);
+  }
+
   sync() {
     const cfg = this.profile.getAdminConfig();
     if (!cfg.unlocked) {
@@ -248,6 +282,45 @@ export class AdminPanel {
         <span class="adm-master-tag">${cfg.enabled ? 'ACTIVE' : 'DISABLED'}</span>
       </button>
 
+      <div class="adm-sec-title">// LIVE ADMIN ABUSE (ALL ONLINE)</div>
+      <div class="adm-abuse-box">
+        <div class="adm-sub-lbl">GLOBAL 30% TOP BANNER (PRESS ENTER)</div>
+        <div class="adm-input-row">
+          <input id="adm-msg-input" class="adm-input" type="text" maxlength="140" placeholder="Type message &amp; Enter..." autocomplete="off" />
+          <button id="adm-msg-send" class="adm-send-btn" type="button">SEND</button>
+        </div>
+
+        <div class="adm-sub-lbl" style="margin-top:6px">GIVE COINS TO ALL ONLINE PLAYERS</div>
+        <div class="adm-input-row">
+          <input id="adm-coin-amt" class="adm-input amt" type="number" min="1" max="100000" value="500" />
+          <input id="adm-coin-reason" class="adm-input" type="text" maxlength="80" placeholder="Gift note (optional)..." autocomplete="off" />
+        </div>
+        <div class="adm-preset-row">
+          <button class="adm-preset-btn" data-coin-preset="100" type="button">+100</button>
+          <button class="adm-preset-btn" data-coin-preset="500" type="button">+500</button>
+          <button class="adm-preset-btn" data-coin-preset="1000" type="button">+1K</button>
+          <button class="adm-preset-btn" data-coin-preset="5000" type="button">+5K</button>
+          <button id="adm-give-coins" class="adm-send-btn gold" type="button">GIVE ALL</button>
+        </div>
+
+        <div class="adm-sub-lbl" style="margin-top:6px">GLOBAL COIN MULTIPLIER EVENT</div>
+        <div id="adm-event-status" class="adm-event-status">${this._formatEventStatusHtml()}</div>
+        <div class="adm-preset-row">
+          ${[2, 3, 5, 10]
+            .map((m) => `<button class="adm-preset-btn ${this._eventMult === m ? 'active' : ''}" data-ev-mult="${m}" type="button">${m}X</button>`)
+            .join('')}
+        </div>
+        <div class="adm-preset-row">
+          ${[5, 10, 15, 30]
+            .map((min) => `<button class="adm-preset-btn ${this._eventMins === min ? 'active' : ''}" data-ev-min="${min}" type="button">${min}m</button>`)
+            .join('')}
+        </div>
+        <div class="adm-action-grid" style="margin-top:4px">
+          <button id="adm-start-event" class="adm-act-btn gold" type="button">START ${this._eventMult}X (${this._eventMins}m)</button>
+          <button id="adm-stop-event" class="adm-act-btn danger" type="button" ${this.network?.getActiveCoinMultiplier?.() > 1 ? '' : 'disabled'}>STOP EVENT</button>
+        </div>
+      </div>
+
       <div class="adm-sec-title">// CHEAT MODULES</div>
       ${toggles
         .map(
@@ -299,6 +372,81 @@ export class AdminPanel {
       this.profile.toggleAdminMaster(next);
       this.log(next ? 'ADMIN MODE ENABLED' : 'ADMIN MODE DISABLED');
       this.cb.onAdminChanged?.();
+    });
+
+    // LIVE ADMIN ABUSE bindings (Global Banner, Coin Drop, Coin Multiplier Event)
+    const senderName = this.profile.state.playerName || 'ADMIN';
+    const msgInput = this.bodyEl.querySelector('#adm-msg-input');
+    const doSendGlobalMsg = () => {
+      const txt = (msgInput?.value || '').trim();
+      if (!txt) return;
+      this.sound?.playClick();
+      this.network?.sendAdminBroadcast?.(txt, senderName);
+      if (msgInput) msgInput.value = '';
+      this.log(`BROADCASTING: "${txt.slice(0, 22)}"...`);
+    };
+    this.bodyEl.querySelector('#adm-msg-send')?.addEventListener('click', doSendGlobalMsg);
+    msgInput?.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        doSendGlobalMsg();
+      }
+    });
+
+    const coinAmtInput = this.bodyEl.querySelector('#adm-coin-amt');
+    const coinReasonInput = this.bodyEl.querySelector('#adm-coin-reason');
+    this.bodyEl.querySelectorAll('[data-coin-preset]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.sound?.playClick();
+        if (coinAmtInput) coinAmtInput.value = btn.dataset.coinPreset;
+      });
+    });
+    const doGiveCoinsAll = () => {
+      const amt = Math.max(1, Math.min(100000, Math.floor(Number(coinAmtInput?.value) || 0)));
+      if (!amt) return;
+      const reason = (coinReasonInput?.value || '').trim();
+      this.sound?.playCoin();
+      this.network?.sendAdminGrantCoins?.(amt, reason, senderName);
+      if (coinReasonInput) coinReasonInput.value = '';
+      this.log(`DROPPING +${amt} COINS TO ALL...`);
+    };
+    this.bodyEl.querySelector('#adm-give-coins')?.addEventListener('click', doGiveCoinsAll);
+    coinReasonInput?.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        doGiveCoinsAll();
+      }
+    });
+    coinAmtInput?.addEventListener('keydown', (e) => e.stopPropagation());
+
+    const startEvBtn = this.bodyEl.querySelector('#adm-start-event');
+    this.bodyEl.querySelectorAll('[data-ev-mult]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.sound?.playClick();
+        this._eventMult = Number(btn.dataset.evMult) || 2;
+        this.bodyEl.querySelectorAll('[data-ev-mult]').forEach((b) => b.classList.toggle('active', Number(b.dataset.evMult) === this._eventMult));
+        if (startEvBtn) startEvBtn.textContent = `START ${this._eventMult}X (${this._eventMins}m)`;
+      });
+    });
+    this.bodyEl.querySelectorAll('[data-ev-min]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.sound?.playClick();
+        this._eventMins = Number(btn.dataset.evMin) || 10;
+        this.bodyEl.querySelectorAll('[data-ev-min]').forEach((b) => b.classList.toggle('active', Number(b.dataset.evMin) === this._eventMins));
+        if (startEvBtn) startEvBtn.textContent = `START ${this._eventMult}X (${this._eventMins}m)`;
+      });
+    });
+    startEvBtn?.addEventListener('click', () => {
+      this.sound?.playVictory();
+      this.network?.sendAdminCoinEvent?.(this._eventMult, this._eventMins, `${this._eventMult}X COIN EVENT!`, senderName);
+      this.log(`STARTING ${this._eventMult}X COINS (${this._eventMins}m)...`);
+    });
+    this.bodyEl.querySelector('#adm-stop-event')?.addEventListener('click', () => {
+      this.sound?.playClick();
+      this.network?.sendAdminCoinEvent?.(1, 0, '', senderName);
+      this.log('STOPPING COIN EVENT...');
     });
 
     this.bodyEl.querySelectorAll('[data-adm-opt]').forEach((btn) => {

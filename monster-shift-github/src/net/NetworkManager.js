@@ -22,6 +22,10 @@ export class NetworkManager {
     this.pingMs = 0;
     this.clientMode = 'lobby'; // 'lobby' | 'match'
     this.serverStats = null;
+    this.liveEvent = { coinMultiplier: 1, endsAt: 0, label: '' };
+    this._seenAdminIds = new Set();
+    this._pendingAdminAck = new Map();
+    this.globalAdminChannel = null;
     this.globalLeaderboard = this._loadCachedLeaderboard();
     this._lbIdentity = null;
     this.ws = null;
@@ -42,6 +46,12 @@ export class NetworkManager {
     this.heartbeatTimer = null;
 
     // Only attempt WS connection if an explicit relay URL is configured (zero console WS errors on static/CrazyGames hosts!)
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        this.globalAdminChannel = new BroadcastChannel('monster_shift_global_admin');
+        this.globalAdminChannel.onmessage = (ev) => this._handleGlobalAdminMsg(ev.data);
+      } catch {}
+    }
     setTimeout(() => this._connectWebSocketIfAvailable(), 260);
     this.joinRoom(this.roomCode, this.inParty, false);
 
@@ -335,9 +345,15 @@ export class NetworkManager {
               partyPlayers: Number(msg.partyPlayers) || 0,
               peakOnline: Number(msg.peakOnline) || 0,
               uptimeSec: Number(msg.uptimeSec) || 0,
+              liveEvent: msg.liveEvent || null,
               updatedAt: Date.now(),
             };
+            if (msg.liveEvent) this._applyLiveEventState(msg.liveEvent);
             this._emit({ type: 'server_stats', stats: this.serverStats });
+            return;
+          }
+          if (msg && (msg.type === 'admin_announce' || msg.type === 'admin_grant_coins' || msg.type === 'admin_event_state' || msg.type === 'admin_ack')) {
+            this._handleGlobalAdminMsg(msg);
             return;
           }
           if (msg && msg.type === 'lb_data' && Array.isArray(msg.players)) {
@@ -552,6 +568,199 @@ export class NetworkManager {
       } catch {}
     }
     return false;
+  }
+
+  getLiveEvent() {
+    const now = Date.now();
+    if (this.liveEvent.coinMultiplier > 1 && this.liveEvent.endsAt > now) {
+      return {
+        coinMultiplier: this.liveEvent.coinMultiplier,
+        endsAt: this.liveEvent.endsAt,
+        remainingMs: Math.max(0, this.liveEvent.endsAt - now),
+        label: this.liveEvent.label || `${this.liveEvent.coinMultiplier}X COIN EVENT!`,
+      };
+    }
+    this.liveEvent = { coinMultiplier: 1, endsAt: 0, label: '' };
+    return { coinMultiplier: 1, endsAt: 0, remainingMs: 0, label: '' };
+  }
+
+  getActiveCoinMultiplier() {
+    return this.getLiveEvent().coinMultiplier || 1;
+  }
+
+  _applyLiveEventState(ev) {
+    if (!ev || (Number(ev.coinMultiplier) || 1) <= 1) {
+      this.liveEvent = { coinMultiplier: 1, endsAt: 0, label: '' };
+      return;
+    }
+    const mult = Math.max(1, Math.min(20, Math.floor(Number(ev.coinMultiplier) || 1)));
+    const remMs = Number(ev.remainingMs) || Math.max(0, (Number(ev.endsAt) || 0) - Date.now());
+    if (remMs <= 0) {
+      this.liveEvent = { coinMultiplier: 1, endsAt: 0, label: '' };
+      return;
+    }
+    this.liveEvent = {
+      coinMultiplier: mult,
+      endsAt: Date.now() + remMs,
+      label: String(ev.label || `${mult}X COIN EVENT!`).slice(0, 48),
+    };
+  }
+
+  _handleGlobalAdminMsg(msg) {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type === 'admin_ack') {
+      const pending = this._pendingAdminAck.get(msg.action);
+      if (pending) {
+        clearTimeout(pending);
+        this._pendingAdminAck.delete(msg.action);
+      }
+      this._emit({ type: 'admin_ack', ...msg });
+      return;
+    }
+    if (msg.id) {
+      if (this._seenAdminIds.has(msg.id)) return;
+      this._seenAdminIds.add(msg.id);
+      if (this._seenAdminIds.size > 60) {
+        const first = this._seenAdminIds.values().next().value;
+        this._seenAdminIds.delete(first);
+      }
+    }
+    if (msg.type === 'admin_announce') {
+      this._emit({
+        type: 'admin_announce',
+        id: msg.id,
+        text: String(msg.text || '').slice(0, 140),
+        sender: String(msg.sender || 'ADMIN').slice(0, 16),
+        style: msg.style || 'message',
+        durationMs: Math.max(3000, Math.min(15000, Number(msg.durationMs) || 6500)),
+      });
+    } else if (msg.type === 'admin_grant_coins') {
+      const amount = Math.max(1, Math.min(100000, Math.floor(Number(msg.amount) || 0)));
+      if (!amount) return;
+      this._emit({
+        type: 'admin_grant_coins',
+        id: msg.id,
+        amount,
+        reason: String(msg.reason || '').slice(0, 80),
+        sender: String(msg.sender || 'ADMIN').slice(0, 16),
+      });
+    } else if (msg.type === 'admin_event_state') {
+      this._applyLiveEventState(msg.event);
+      this._emit({
+        type: 'admin_event_state',
+        event: this.getLiveEvent(),
+        started: Boolean(msg.started),
+        ended: Boolean(msg.ended),
+      });
+    }
+  }
+
+  _dispatchAdminCommand(wsPayload, ackAction, localFallbackFn) {
+    const canWs = this.ws && this.ws.readyState === WebSocket.OPEN;
+    if (canWs) {
+      try {
+        this.ws.send(JSON.stringify(wsPayload));
+        // If server is running updated server.js, admin_ack arrives in <300ms; otherwise gracefully run local preview fallback!
+        const prev = this._pendingAdminAck.get(ackAction);
+        if (prev) clearTimeout(prev);
+        const timer = setTimeout(() => {
+          this._pendingAdminAck.delete(ackAction);
+          localFallbackFn(true);
+        }, 750);
+        this._pendingAdminAck.set(ackAction, timer);
+        return 'ws';
+      } catch {}
+    }
+    localFallbackFn(false);
+    return 'local';
+  }
+
+  sendAdminBroadcast(text, sender = 'ADMIN', durationMs = 6500) {
+    const clean = String(text || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 140);
+    if (!clean) return false;
+    const payload = {
+      type: 'admin_broadcast',
+      secret: 'ezwin',
+      text: clean,
+      sender: String(sender || 'ADMIN').slice(0, 16),
+      durationMs,
+    };
+    this._dispatchAdminCommand(payload, 'broadcast', (wasOldServer) => {
+      const msg = {
+        type: 'admin_announce',
+        id: `local_ann_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        text: clean,
+        sender: payload.sender,
+        style: 'message',
+        durationMs,
+      };
+      this.globalAdminChannel?.postMessage(msg);
+      this._handleGlobalAdminMsg(msg);
+      this._emit({ type: 'admin_ack', action: 'broadcast', reached: 1, localOnly: true, oldServer: wasOldServer });
+    });
+    return true;
+  }
+
+  sendAdminGrantCoins(amount, reason = '', sender = 'ADMIN') {
+    const amt = Math.max(1, Math.min(100000, Math.floor(Number(amount) || 0)));
+    if (!amt) return false;
+    const cleanReason = String(reason || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 80);
+    const payload = {
+      type: 'admin_grant_coins',
+      secret: 'ezwin',
+      amount: amt,
+      reason: cleanReason,
+      sender: String(sender || 'ADMIN').slice(0, 16),
+    };
+    this._dispatchAdminCommand(payload, 'grant_coins', (wasOldServer) => {
+      const msg = {
+        type: 'admin_grant_coins',
+        id: `local_gift_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        amount: amt,
+        reason: cleanReason,
+        sender: payload.sender,
+      };
+      this.globalAdminChannel?.postMessage(msg);
+      this._handleGlobalAdminMsg(msg);
+      this._emit({ type: 'admin_ack', action: 'grant_coins', amount: amt, reached: 1, localOnly: true, oldServer: wasOldServer });
+    });
+    return true;
+  }
+
+  sendAdminCoinEvent(coinMultiplier, durationMin = 10, label = '', sender = 'ADMIN') {
+    const mult = Math.max(1, Math.min(20, Math.floor(Number(coinMultiplier) || 1)));
+    const mins = Math.max(1, Math.min(120, Math.floor(Number(durationMin) || 10)));
+    const cleanLabel = String(label || (mult > 1 ? `${mult}X COIN EVENT!` : '')).trim().slice(0, 48);
+    const ackAction = mult <= 1 ? 'stop_event' : 'start_event';
+    const payload = {
+      type: 'admin_set_event',
+      secret: 'ezwin',
+      coinMultiplier: mult,
+      durationMin: mins,
+      label: cleanLabel,
+      sender: String(sender || 'ADMIN').slice(0, 16),
+    };
+    this._dispatchAdminCommand(payload, ackAction, (wasOldServer) => {
+      const ev =
+        mult <= 1
+          ? { coinMultiplier: 1, endsAt: 0, remainingMs: 0, label: '' }
+          : { coinMultiplier: mult, endsAt: Date.now() + mins * 60000, remainingMs: mins * 60000, label: cleanLabel };
+      const stateMsg = { type: 'admin_event_state', event: ev, started: mult > 1, ended: mult <= 1 };
+      const annMsg = {
+        type: 'admin_announce',
+        id: `local_ev_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        text: mult > 1 ? `🔥 ${cleanLabel} (${mins} MIN) 🔥` : 'COIN BOOST EVENT HAS ENDED!',
+        sender: payload.sender,
+        style: 'event',
+        durationMs: mult > 1 ? 6500 : 4200,
+      };
+      this.globalAdminChannel?.postMessage(stateMsg);
+      this.globalAdminChannel?.postMessage(annMsg);
+      this._handleGlobalAdminMsg(stateMsg);
+      this._handleGlobalAdminMsg(annMsg);
+      this._emit({ type: 'admin_ack', action: ackAction, coinMultiplier: mult, durationMin: mins, reached: 1, localOnly: true, oldServer: wasOldServer });
+    });
+    return true;
   }
 
   _sendPing() {

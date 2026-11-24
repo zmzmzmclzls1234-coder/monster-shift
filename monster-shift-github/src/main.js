@@ -1,4 +1,5 @@
 import * as THREE from '../vendor/three.module.min.js';
+import { getAvailableCasualModes } from './data/catalog.js';
 import { ProfileStore } from './data/storage.js';
 import { SoundManager } from './audio/SoundManager.js';
 import { SceneManager } from './engine/SceneManager.js';
@@ -28,6 +29,8 @@ class MonsterShiftApp {
     this._fullscreenAttempted = false;
     this._pauseReasons = new Set();
     this._adTransitionBusy = false;
+    this._rouletteBusy = false;
+    this._lastCasualModeId = null;
 
     // Strictly initialize CrazyGames SDK BEFORE calling loadingStart()/loadingStop()!
     crazyGames.init({
@@ -128,6 +131,15 @@ class MonsterShiftApp {
         this.network.setClientMode('lobby');
         crazyGames.gameplayStop();
         this.tutorial.stop();
+
+        // Apply active global Admin Coin Multiplier Event (e.g. 2X / 3X / 5X / 10X) to ALL online players!
+        const evMult = this.network.getActiveCoinMultiplier?.() || 1;
+        if (evMult > 1) {
+          summary.baseCoinsEarned = summary.coinsEarned;
+          summary.coinsEarned = Math.round(summary.coinsEarned * evMult);
+          summary.eventMultiplier = evMult;
+        }
+
         this.profile.recordMatch({
           won: summary.localWon,
           eliminations: summary.eliminations,
@@ -206,6 +218,11 @@ class MonsterShiftApp {
           this.profile.markIntroSeen();
           this.enterLobby();
         },
+        onIntroPlayNow: () => {
+          this.profile.markIntroSeen();
+          this.intro.stop();
+          this.handleStartMatchFromUi();
+        },
         onToggleFullscreen: () => this.toggleFullscreen(),
         onReplayIntroAndTutorial: () => {
           this.profile.resetTutorial();
@@ -242,13 +259,39 @@ class MonsterShiftApp {
         this._beginMatchWithConfig(evt.payload);
       } else if (evt.type === 'party_mode' && evt.mode && this.network.inParty && !this.network.isHost()) {
         this.profile.setPlayMode(evt.mode);
+      } else if (evt.type === 'admin_announce' && evt.text) {
+        this.ui.showAdminBroadcast({
+          text: evt.text,
+          sender: evt.sender || 'ADMIN',
+          style: evt.style || 'message',
+          durationMs: evt.durationMs || 6500,
+        });
+      } else if (evt.type === 'admin_grant_coins' && evt.amount > 0) {
+        const added = this.profile.grantBonusCoins(evt.amount);
+        this.ui.refreshLobbyChrome();
+        this.sound.playVictory();
+        this.sound.playCoin();
+        setTimeout(() => this.sound.playCoin(), 140);
+        this.ui.showAdminBroadcast({
+          text: `+${added.toLocaleString()} COINS GIFT!!`,
+          subText: evt.reason || `FREE COINS FROM ${(evt.sender || 'ADMIN').toUpperCase()}!`,
+          sender: evt.sender || 'ADMIN',
+          style: 'gift',
+          durationMs: 6500,
+        });
+      } else if (evt.type === 'admin_event_state') {
+        this.ui.refreshLiveEventPill();
       }
     });
 
     this._bindCanvasInteraction();
     this.applySettings();
-    // Always play the signature Slime Tap & Eat-Survivor intro animation on game entry (with SKIP → button always ready!)
-    this.startFirstTimeIntro();
+    // Returning players jump straight into Lobby for instant 1-tap play; new players get the interactive intro (with instant PLAY NOW!)
+    if (this.profile.state.introSeen) {
+      this.enterLobby();
+    } else {
+      this.startFirstTimeIntro();
+    }
 
     this.clock = new THREE.Clock();
     this.elapsed = 0;
@@ -488,6 +531,8 @@ class MonsterShiftApp {
   }
 
   enterLobby() {
+    this._rouletteBusy = false;
+    this.ui?.cancelModeRoulette?.();
     this._pauseReasons.delete('user');
     this._pauseReasons.delete('visibility');
     this.sound.setPausedMute(this.isPaused());
@@ -522,25 +567,59 @@ class MonsterShiftApp {
   }
 
   launchMultiplayerMatch() {
+    if (this._rouletteBusy) return;
     // Only the Party Host can launch a match when multiple humans are in a party!
     if (this.network.inParty && this.network.getRoster().length > 1 && !this.network.isHost()) {
       return;
     }
     this.applySettings();
+    const playMode = this.profile.state.playMode === 'ranked' ? 'ranked' : 'casual';
     const usePass = this.profile.hasMonsterPass();
     const isFirstEverMatch = (this.profile.state.matchesCompleted || 0) === 0 && !this.profile.getAdminConfig().active;
-    const config = this.match.buildMatchConfig(this.profile.state, this.profile.getWinRateInfo(), {
-      forcedMonsterPlayerId: usePass ? this.network.peerId : null,
-      firstMatchMonsterId: !usePass && isFirstEverMatch ? this.network.peerId : null,
-    });
-    if (config.monsterPassUsed) this.profile.consumeMonsterPass();
-    this.network.broadcastMatchStart(config);
-    this._beginMatchWithConfig(config);
-    if (config.monsterPassUsed) {
-      setTimeout(() => {
-        if (this.mode === 'match') this.ui.showAlert('mutation', 'MONSTER PASS: YOU ARE THE MONSTER!');
-      }, 700);
+
+    const startWithMode = (gameModeId) => {
+      const config = this.match.buildMatchConfig(this.profile.state, this.profile.getWinRateInfo(), {
+        forcedMonsterPlayerId: usePass ? this.network.peerId : null,
+        firstMatchMonsterId: !usePass && isFirstEverMatch ? this.network.peerId : null,
+        gameMode: gameModeId,
+      });
+      if (config.monsterPassUsed) this.profile.consumeMonsterPass();
+      this.network.broadcastMatchStart(config);
+      this._beginMatchWithConfig(config);
+      if (config.monsterPassUsed) {
+        setTimeout(() => {
+          if (this.mode === 'match') this.ui.showAlert('mutation', 'MONSTER PASS: YOU ARE THE MONSTER!');
+        }, 700);
+      }
+    };
+
+    // Ranked is always pure CLASSIC 1v5 with instant launch (no roulette!)
+    if (playMode === 'ranked') {
+      startWithMode('classic');
+      return;
     }
+
+    // Casual Mode: spin the snappy ~1.6s Mode Roulette across all active modes (Snowball Fight auto-included in Winter!)
+    const allModes = getAvailableCasualModes();
+    let chosenMode;
+    if (isFirstEverMatch) {
+      chosenMode = allModes.find((m) => m.id === 'classic') || allModes[0];
+    } else {
+      let pool = usePass
+        ? allModes.filter((m) => m.id !== 'snowball_fight' && m.id !== 'slime_brawl')
+        : allModes.slice();
+      if (pool.length === 0) pool = allModes;
+      if (pool.length > 1 && this._lastCasualModeId) {
+        pool = pool.filter((m) => m.id !== this._lastCasualModeId);
+      }
+      chosenMode = pool[Math.floor(Math.random() * pool.length)] || allModes[0];
+    }
+    this._lastCasualModeId = chosenMode.id;
+    this._rouletteBusy = true;
+    this.ui.playModeRoulette(allModes, chosenMode, () => {
+      this._rouletteBusy = false;
+      startWithMode(chosenMode.id);
+    });
   }
 
   /**
@@ -571,6 +650,8 @@ class MonsterShiftApp {
   }
 
   _beginMatchWithConfig(config) {
+    this._rouletteBusy = false;
+    this.ui?.cancelModeRoulette?.();
     if (!this.arena._fullBuilt) {
       window.__showQuickLoader?.('LOADING ARENA...');
       this.arena.ensureFullArenaBuilt();

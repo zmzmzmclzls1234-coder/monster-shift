@@ -59,7 +59,19 @@ export class UIManager {
     this.rankTextEl = document.getElementById('lobby-rank-text');
     this.matchProgPill = document.getElementById('lobby-match-prog');
     this.matchProgText = document.getElementById('lobby-match-prog-text');
+    this.netPill = document.getElementById('lobby-net-pill');
     this.netTextEl = document.getElementById('lobby-net-text');
+    this.modePartyBtn = document.getElementById('btn-mode-party');
+    this.modePartyLabel = document.getElementById('mode-party-label');
+    this.playModeSub = document.getElementById('play-mode-sub');
+    this.rouletteOverlay = document.getElementById('mode-roulette-overlay');
+    this.rouletteStrip = document.getElementById('roulette-strip');
+    this.rouletteResultName = document.getElementById('roulette-result-name');
+    this.rouletteResultDesc = document.getElementById('roulette-result-desc');
+    this.roulettePointerTop = document.getElementById('roulette-pointer-top');
+    this.roulettePointerBot = document.getElementById('roulette-pointer-bot');
+    this._rouletteRaf = null;
+    this._rouletteTimer = null;
     this.rewardsBadge = document.getElementById('rewards-badge');
     this.lockerBadge = document.getElementById('locker-badge');
     this.stageRoleEl = document.getElementById('stage-char-role');
@@ -123,6 +135,16 @@ export class UIManager {
     this.rankupEmblem = document.getElementById('rankup-emblem');
     this.rankupTierName = document.getElementById('rankup-tier-name');
     this.rankupRrInfo = document.getElementById('rankup-rr-info');
+
+    this.adminBanner = document.getElementById('admin-broadcast-banner');
+    this.adminBannerKicker = document.getElementById('abb-kicker');
+    this.adminBannerText = document.getElementById('abb-text');
+    this.adminBannerSub = document.getElementById('abb-sub');
+    this._adminBannerTimer = null;
+    this._adminBannerFadeTimer = null;
+    this.liveEventPill = document.getElementById('live-event-pill');
+    this.liveEventText = document.getElementById('live-event-text');
+    this._liveEventTickTimer = null;
 
     this.toastTimer = null;
     this.alertTimer = null;
@@ -203,9 +225,34 @@ export class UIManager {
     document.getElementById('btn-play').addEventListener('click', () => {
       this.sound.unlock();
       this.sound.playClick();
+      const lockedMember = this.network.inParty && this.network.getRoster().length > 1 && !this.network.isHost();
+      if (lockedMember) {
+        this.playTab = 'match';
+        this.openDrawer('play');
+        return;
+      }
+      this.cb.onTutorialAction('click_play');
+      this.cb.onStartMatch();
+    });
+    const openPlayParty = () => {
+      this.sound.unlock();
+      this.sound.playClick();
       this.playTab = 'match';
       this.openDrawer('play');
-      this.cb.onTutorialAction('click_play');
+    };
+    this.modePartyBtn?.addEventListener('click', openPlayParty);
+    this.netPill?.addEventListener('click', openPlayParty);
+    this.netPill?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openPlayParty();
+      }
+    });
+    document.getElementById('btn-intro-play-now')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.sound.unlock();
+      this.sound.playClick();
+      this.cb.onIntroPlayNow?.();
     });
     this.rankPill?.addEventListener('click', () => {
       this.sound.unlock();
@@ -477,6 +524,17 @@ export class UIManager {
     if (this.lockerBadge) {
       this.lockerBadge.classList.toggle('hidden', dups === 0);
       this.lockerBadge.textContent = String(dups);
+    }
+
+    const isRanked = this.profile.state.playMode === 'ranked';
+    if (this.modePartyLabel) {
+      this.modePartyLabel.textContent = isRanked ? 'RANKED 1v5 · PARTY ▾' : 'CASUAL · ROULETTE ▾';
+    }
+    if (this.modePartyBtn) {
+      this.modePartyBtn.classList.toggle('is-ranked', isRanked);
+    }
+    if (this.playModeSub) {
+      this.playModeSub.textContent = isRanked ? 'RANKED 1v5' : isChristmasEventActive() ? '6-MODE ROULETTE ❄' : '5-MODE ROULETTE';
     }
 
     if (!this.activeDrawer) {
@@ -1581,25 +1639,25 @@ export class UIManager {
       const launchLabel = isMemberLocked
         ? `WAITING FOR HOST (${(hostPlayer?.name || 'HOST').toUpperCase()})...`
         : inParty
-        ? `START PARTY ${playMode === 'ranked' ? 'RANKED' : 'CASUAL'} (${roster.length}/6)!`
+        ? `START PARTY ${playMode === 'ranked' ? 'RANKED 1v5' : 'ROULETTE'} (${roster.length}/6)!`
         : playMode === 'ranked'
         ? `PLAY RANKED (${rk.label.toUpperCase()})!`
-        : 'PLAY CASUAL 1v5!';
+        : 'SPIN & PLAY CASUAL!';
 
       html += `
         <div class="play-mode-card">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px">
-            <div class="row-title">Select Mode · Random 1v5</div>
+            <div class="row-title">Select Mode · Random Map</div>
             <span class="item-badge" style="background:#ff9524;color:#fff" title="Bots scale with your Rank + Win Rate">${wr.label} · ${wr.winPct}% WR</span>
           </div>
           <div class="mode-grid">
             <button class="mode-tile ${playMode === 'casual' ? 'active casual' : ''}" data-play-mode="casual" type="button" ${isMemberLocked ? 'disabled' : ''}>
               <div class="mode-tile-title">CASUAL</div>
-              <div class="mode-tile-sub">Fun 1v5 · No RR risk</div>
+              <div class="mode-tile-sub">${isChristmasEventActive() ? '6-Mode Roulette ❄' : '5-Mode Roulette'} · No RR risk</div>
             </button>
             <button class="mode-tile ${playMode === 'ranked' ? 'active ranked' : ''}" data-play-mode="ranked" type="button" ${isMemberLocked ? 'disabled' : ''}>
               <div class="mode-tile-head">${renderRankEmblem(rk.tier.id, 24)} <span class="mode-tile-title">RANKED</span></div>
-              <div class="mode-tile-sub">${rk.label} · ${rk.totalRR} RR</div>
+              <div class="mode-tile-sub">Classic 1v5 · ${rk.label} · ${rk.totalRR} RR</div>
             </button>
           </div>
           <div class="row-sub" style="margin:7px 0 9px">
@@ -2062,10 +2120,11 @@ export class UIManager {
       this.hudBanner.classList.add(`map-theme-${mapId}`);
 
       const mapTitle = (msg.mapName || msg.bannerTitle || 'SUNNY TOY PARK').toUpperCase();
+      const modeLabel = (msg.modeName || 'CLASSIC 1v5').toUpperCase();
       const monPlayer = msg.monsterPlayerName || 'MONSTER';
       const monChar = (msg.monsterCharName || '').toUpperCase();
       this.hudBannerTitle.innerHTML = `
-        <span class="banner-map-kicker">MAP</span>
+        <span class="banner-map-kicker">${modeLabel} · MAP</span>
         <span class="banner-map-name">${mapTitle}</span>
       `;
       const monExtra = monChar && monPlayer.toUpperCase() !== monChar
@@ -2073,14 +2132,32 @@ export class UIManager {
         : msg.monsterIsBot
         ? `<span class="banner-mon-char">(AI BOT)</span>`
         : '';
+      const modeTag =
+        msg.gameMode === 'snowball_fight' ? '❄ MODE' :
+        msg.gameMode === 'slime_brawl' ? '👑 MODE' :
+        msg.gameMode === 'turbo_chaos' ? '⚡ MODE' :
+        'MONSTER';
       this.hudBannerSub.innerHTML = `
         <div class="banner-monster-reveal ${msg.monsterIsLocal ? 'is-you' : ''}">
-          <span class="banner-mon-tag">MONSTER</span>
+          <span class="banner-mon-tag">${modeTag}</span>
           <span class="banner-mon-player">${monPlayer}</span>
           ${monExtra}
         </div>
       `;
       this._syncHudPopups();
+    } else if (msg.type === 'infectedLocal') {
+      this.hudRoleCard.classList.remove('ghost', 'survivor');
+      this.hudRoleCard.classList.add('monster');
+      this.hudRoleLabel.textContent = (msg.charName || 'INFECTED').toUpperCase();
+      this.hudGrowthLabel.textContent = 'INFECTED SLIME · HUNT!';
+      this.hudHealthFill.style.width = '40%';
+      this.hudHealthFill.style.background = 'linear-gradient(90deg, #9b2cff, #ff3d6e)';
+      this.primaryLabel.textContent = (msg.abilityName || 'ABILITY').toUpperCase();
+      this.primaryHint.textContent = `SPACE: ${msg.abilityName || 'Ability'}`;
+      this.secondaryLabel.textContent = 'CHOMP';
+      this.secondaryHint.textContent = 'CLICK: Chomp';
+      this._renderSurvivorDots(msg.survivorsAlive, 5);
+      this._showToast('YOU WERE INFECTED! HUNT SURVIVORS!');
     } else if (msg.type === 'weaponChanged') {
       this._highlightWeapon(msg.weaponId);
       this._showToast(`${msg.weaponName.toUpperCase()}!`);
@@ -2152,7 +2229,13 @@ export class UIManager {
       this._syncHudPopups();
     } else if (msg.type === 'victoryBanner') {
       if (this.victoryBanner) {
-        this.victoryBanner.className = `victory-banner ${msg.winner === 'monster' ? 'is-monster' : 'is-survivors'}`;
+        const cls =
+          msg.winner === 'brawl' || msg.winner === 'snowball'
+            ? (msg.localWon ? 'is-survivors' : 'is-monster')
+            : msg.winner === 'monster'
+            ? 'is-monster'
+            : 'is-survivors';
+        this.victoryBanner.className = `victory-banner ${cls}`;
         this.victoryBanner.innerHTML = `
           <div class="victory-kicker">${msg.localWon ? 'VICTORY!' : 'MATCH OVER'}</div>
           <div class="victory-title">${msg.headline}</div>
@@ -2196,8 +2279,14 @@ export class UIManager {
           this.hudStateText = null;
         }
         this._syncHudPopups();
-      } else if (this.hudRoleCard.classList.contains('survivor')) {
-        this.hudHealthFill.style.width = '0%';
+      } else {
+        if (this.hudRoleCard.classList.contains('survivor')) {
+          this.hudHealthFill.style.width = '0%';
+        }
+        if (msg.statusText) {
+          this.hudStateText = msg.statusText;
+          this._syncHudPopups();
+        }
       }
     }
   }
@@ -2343,15 +2432,47 @@ export class UIManager {
     this.setScreen('results');
     const tm = this.profile.getThreeMatchStatus();
     this.resultsBadge.textContent = summary.localWon ? 'VICTORY!' : 'MATCH COMPLETE';
-    this.resultsHeadline.textContent = summary.winner === 'monster' ? 'MONSTER WINS!' : 'SURVIVORS WIN!';
-    this.resultsSummary.textContent =
-      summary.winner === 'monster'
-        ? `The Monster caught everyone and reached Growth Stage ${summary.monsterStage}!`
-        : `${summary.survivorsAlive} Survivor${summary.survivorsAlive === 1 ? '' : 's'} outlasted the Monster!`;
+    const gm = summary.gameMode || 'classic';
+    if (summary.winner === 'brawl') {
+      this.resultsHeadline.textContent = `${(summary.ffaWinnerName || 'SLIME').toUpperCase()} WINS!`;
+      this.resultsSummary.textContent = `SLIME BRAWL · Winning Mass: ${summary.ffaWinnerScore || 0}!`;
+    } else if (summary.winner === 'snowball') {
+      this.resultsHeadline.textContent = `${(summary.ffaWinnerName || 'CHAMP').toUpperCase()} WINS!`;
+      this.resultsSummary.textContent = `❄ SNOWBALL FIGHT · ${summary.ffaWinnerScore || 0} Snowball KOs!`;
+    } else if (gm === 'infection' && summary.winner === 'monster') {
+      this.resultsHeadline.textContent = 'INFECTED WIN!';
+      this.resultsSummary.textContent = 'All Survivors were mutated into Infected Slimes!';
+    } else if (gm === 'star_rush' && summary.winner === 'survivors' && (summary.teamStars || 0) >= 18) {
+      this.resultsHeadline.textContent = 'SURVIVORS WIN!';
+      this.resultsSummary.textContent = 'STAR RUSH · Survivors collected all 18 Golden Stars!';
+    } else {
+      this.resultsHeadline.textContent = summary.winner === 'monster' ? 'MONSTER WINS!' : 'SURVIVORS WIN!';
+      this.resultsSummary.textContent =
+        summary.winner === 'monster'
+          ? `The Monster caught everyone and reached Growth Stage ${summary.monsterStage}!`
+          : `${summary.survivorsAlive} Survivor${summary.survivorsAlive === 1 ? '' : 's'} outlasted the Monster!`;
+    }
+
+    const midStatVal =
+      gm === 'snowball_fight'
+        ? `${summary.eliminations} KOs`
+        : gm === 'star_rush' && summary.localRole === 'survivor'
+        ? `${summary.teamStars || 0}/18 ★`
+        : summary.localRole === 'monster'
+        ? `Stage ${summary.monsterStage}`
+        : `${summary.weaponHits} Hits`;
+    const midStatLbl =
+      gm === 'snowball_fight'
+        ? 'Snowball KOs'
+        : gm === 'star_rush' && summary.localRole === 'survivor'
+        ? 'Team Stars'
+        : summary.localRole === 'monster'
+        ? 'Peak Size'
+        : 'Weapon Hits';
 
     this.resultsStats.innerHTML = `
-      <div class="stat-box"><div class="stat-val">+${summary.coinsEarned}</div><div class="stat-lbl">Coins</div></div>
-      <div class="stat-box"><div class="stat-val">${summary.localRole === 'monster' ? `Stage ${summary.monsterStage}` : `${summary.weaponHits} Hits`}</div><div class="stat-lbl">${summary.localRole === 'monster' ? 'Peak Size' : 'Weapon Hits'}</div></div>
+      <div class="stat-box"><div class="stat-val">+${summary.coinsEarned}</div><div class="stat-lbl">${summary.eventMultiplier > 1 ? `Coins (${summary.eventMultiplier}X EVENT!)` : 'Coins'}</div></div>
+      <div class="stat-box"><div class="stat-val">${midStatVal}</div><div class="stat-lbl">${midStatLbl}</div></div>
       <div class="stat-box"><div class="stat-val">${formatTime(summary.elapsedSec)}</div><div class="stat-lbl">Time</div></div>
     `;
 
@@ -2521,6 +2642,207 @@ export class UIManager {
         const waitMs = summary.rankUpdate ? (summary.rankUpdate.promoted ? 6600 : 4800) : 600;
         this._startAutoNextMatch(waitMs);
       }
+    }
+  }
+
+  cancelModeRoulette() {
+    if (this._rouletteRaf) {
+      cancelAnimationFrame(this._rouletteRaf);
+      this._rouletteRaf = null;
+    }
+    if (this._rouletteTimer) {
+      clearTimeout(this._rouletteTimer);
+      this._rouletteTimer = null;
+    }
+    this.rouletteOverlay?.classList.add('hidden');
+  }
+
+  _renderModeCartoonSvg(modeId) {
+    const ink = '#14192B';
+    if (modeId === 'infection') {
+      return `<svg class="rt-svg" viewBox="0 0 64 64" fill="none"><path d="M10 46C10 24 20 12 32 12C44 12 54 24 54 46C54 55 44 57 32 57C20 57 10 55 10 46Z" fill="#B24BFF" stroke="${ink}" stroke-width="4.5"/><circle cx="23" cy="34" r="6" fill="#FFE047" stroke="${ink}" stroke-width="3.2"/><circle cx="41" cy="34" r="6" fill="#FFE047" stroke="${ink}" stroke-width="3.2"/><circle cx="24" cy="34" r="2.6" fill="${ink}"/><circle cx="42" cy="34" r="2.6" fill="${ink}"/><path d="M23 46L28 42L32 46L36 42L41 46" stroke="${ink}" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="49" cy="15" r="5" fill="#52F768" stroke="${ink}" stroke-width="3"/></svg>`;
+    }
+    if (modeId === 'slime_brawl') {
+      return `<svg class="rt-svg" viewBox="0 0 64 64" fill="none"><path d="M12 49C12 31 21 21 32 21C43 21 52 31 52 49C52 56 43 58 32 58C21 58 12 56 12 49Z" fill="#FF9E1A" stroke="${ink}" stroke-width="4.5"/><path d="M17 24L21 10L32 18L43 10L47 24Z" fill="#FFE047" stroke="${ink}" stroke-width="4" stroke-linejoin="round"/><circle cx="24" cy="39" r="5.5" fill="#FFF" stroke="${ink}" stroke-width="3"/><circle cx="40" cy="39" r="5.5" fill="#FFF" stroke="${ink}" stroke-width="3"/><circle cx="25" cy="39" r="2.6" fill="${ink}"/><circle cx="41" cy="39" r="2.6" fill="${ink}"/><path d="M26 48Q32 53 38 48" stroke="${ink}" stroke-width="3.5" stroke-linecap="round"/></svg>`;
+    }
+    if (modeId === 'turbo_chaos') {
+      return `<svg class="rt-svg" viewBox="0 0 64 64" fill="none"><path d="M35 6L12 36H29L24 58L52 26H35L35 6Z" fill="#FFE047" stroke="${ink}" stroke-width="4.5" stroke-linejoin="round"/><path d="M46 10L55 15L49 23" stroke="#FF3D6E" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="15" cy="18" r="4.5" fill="#FF5E14" stroke="${ink}" stroke-width="3"/></svg>`;
+    }
+    if (modeId === 'star_rush') {
+      return `<svg class="rt-svg" viewBox="0 0 64 64" fill="none"><path d="M32 7L39.6 22.4L56.6 24.9L44.3 36.9L47.2 53.8L32 45.8L16.8 53.8L19.7 36.9L7.4 24.9L24.4 22.4L32 7Z" fill="#FFE047" stroke="${ink}" stroke-width="4.5" stroke-linejoin="round"/><circle cx="27" cy="31" r="2.8" fill="${ink}"/><circle cx="37" cy="31" r="2.8" fill="${ink}"/><path d="M28 37Q32 41 36 37" stroke="${ink}" stroke-width="3.2" stroke-linecap="round"/></svg>`;
+    }
+    if (modeId === 'snowball_fight') {
+      return `<svg class="rt-svg" viewBox="0 0 64 64" fill="none"><circle cx="32" cy="34" r="21" fill="#E6FBFF" stroke="${ink}" stroke-width="4.5"/><path d="M20 26C23 20 30 18 36 19" stroke="#FFFFFF" stroke-width="4.5" stroke-linecap="round"/><path d="M32 19V49M17 34H47M22 24L42 44M42 24L22 44" stroke="#29B6FF" stroke-width="3.4" stroke-linecap="round"/><circle cx="50" cy="14" r="5" fill="#FFFFFF" stroke="${ink}" stroke-width="3"/></svg>`;
+    }
+    return `<svg class="rt-svg" viewBox="0 0 64 64" fill="none"><path d="M10 47C10 25 20 13 32 13C44 13 54 25 54 47C54 55 44 57 32 57C20 57 10 55 10 47Z" fill="#42E87A" stroke="${ink}" stroke-width="4.5"/><ellipse cx="24" cy="24" rx="5.5" ry="3" transform="rotate(-18 24 24)" fill="#B4FFCA"/><circle cx="24" cy="36" r="6" fill="#FFFFFF" stroke="${ink}" stroke-width="3.2"/><circle cx="40" cy="36" r="6" fill="#FFFFFF" stroke="${ink}" stroke-width="3.2"/><circle cx="25" cy="36" r="2.8" fill="${ink}"/><circle cx="41" cy="36" r="2.8" fill="${ink}"/><path d="M26 46Q32 51 38 46" stroke="${ink}" stroke-width="3.5" stroke-linecap="round"/></svg>`;
+  }
+
+  playModeRoulette(modes, chosenMode, onDone) {
+    this.cancelModeRoulette();
+    if (!this.rouletteOverlay || !this.rouletteStrip || !modes || modes.length === 0) {
+      onDone?.();
+      return;
+    }
+
+    const totalTiles = 24;
+    const startIdx = 2;
+    const targetIdx = 18;
+    const tileW = 158;
+    const gap = 12;
+    const step = tileW + gap;
+
+    const others = modes.filter((m) => m.id !== chosenMode.id);
+    const pickOther = (i) => (others.length > 0 ? others[i % others.length] : chosenMode);
+    const seq = [];
+    for (let i = 0; i < totalTiles; i++) {
+      if (i === targetIdx) {
+        seq.push(chosenMode);
+      } else if (i === targetIdx - 1 || i === targetIdx + 1) {
+        seq.push(pickOther(i));
+      } else {
+        seq.push(modes[(i * 7 + Math.floor(Math.random() * modes.length)) % modes.length]);
+      }
+    }
+
+    this.rouletteStrip.innerHTML = seq
+      .map(
+        (m, idx) => `
+          <div class="roulette-tile ${m.holiday ? 'is-holiday' : ''}" data-ridx="${idx}" style="--mode-col:${m.color || '#25a8ff'}">
+            <div class="rt-badge">${m.short || 'MODE'}</div>
+            <div class="rt-icon">${this._renderModeCartoonSvg(m.id)}</div>
+            <div class="rt-name">${m.name}</div>
+          </div>
+        `
+      )
+      .join('');
+
+    this.rouletteOverlay.classList.remove('hidden', 'is-locked');
+    if (this.rouletteResultName) {
+      this.rouletteResultName.textContent = 'SPINNING...';
+    }
+    if (this.rouletteResultDesc) {
+      this.rouletteResultDesc.textContent = 'Random map + surprise mode!';
+    }
+
+    const startX = -(startIdx * step + tileW / 2);
+    const endX = -(targetIdx * step + tileW / 2);
+    this.rouletteStrip.style.transform = `translate3d(${startX}px, 0, 0)`;
+
+    const spinMs = 1120;
+    const holdMs = 480;
+    const t0 = performance.now();
+    let lastTickIdx = startIdx;
+
+    const frame = (now) => {
+      const p = Math.min(1, (now - t0) / spinMs);
+      const eased = 1 - Math.pow(1 - p, 3.3);
+      const curX = startX + (endX - startX) * eased;
+      this.rouletteStrip.style.transform = `translate3d(${curX.toFixed(1)}px, 0, 0)`;
+
+      const curIdx = Math.round(startIdx + (targetIdx - startIdx) * eased);
+      if (curIdx !== lastTickIdx) {
+        lastTickIdx = curIdx;
+        this.sound.playRouletteTick?.(p);
+        this.roulettePointerTop?.classList.remove('kick');
+        this.roulettePointerBot?.classList.remove('kick');
+        void this.roulettePointerTop?.getBoundingClientRect();
+        this.roulettePointerTop?.classList.add('kick');
+        this.roulettePointerBot?.classList.add('kick');
+        const activeTile = this.rouletteStrip.querySelector(`[data-ridx="${curIdx}"]`);
+        const modeAtIdx = seq[curIdx];
+        if (this.rouletteResultName && modeAtIdx) {
+          this.rouletteResultName.textContent = modeAtIdx.name;
+        }
+        this.rouletteStrip.querySelectorAll('.roulette-tile.passing').forEach((el) => el.classList.remove('passing'));
+        activeTile?.classList.add('passing');
+      }
+
+      if (p < 1) {
+        this._rouletteRaf = requestAnimationFrame(frame);
+      } else {
+        this._rouletteRaf = null;
+        this.rouletteStrip.style.transform = `translate3d(${endX}px, 0, 0)`;
+        this.sound.playRouletteLock?.();
+        this.rouletteOverlay.classList.add('is-locked');
+        const winTile = this.rouletteStrip.querySelector(`[data-ridx="${targetIdx}"]`);
+        winTile?.classList.add('locked');
+        if (this.rouletteResultName) {
+          this.rouletteResultName.textContent = `${chosenMode.name}!`;
+        }
+        if (this.rouletteResultDesc) {
+          this.rouletteResultDesc.textContent = chosenMode.desc || 'Random map selected!';
+        }
+        this._rouletteTimer = setTimeout(() => {
+          this._rouletteTimer = null;
+          this.rouletteOverlay?.classList.add('hidden');
+          onDone?.();
+        }, holdMs);
+      }
+    };
+
+    this._rouletteRaf = requestAnimationFrame(frame);
+  }
+
+  showAdminBroadcast({ text, subText = '', sender = 'ADMIN', style = 'message', durationMs = 6500 }) {
+    if (!this.adminBanner || !text) return;
+    clearTimeout(this._adminBannerTimer);
+    clearTimeout(this._adminBannerFadeTimer);
+
+    const kicker =
+      style === 'gift'
+        ? '🎁 ADMIN COIN DROP! 🎁'
+        : style === 'event'
+        ? '🔥 LIVE SERVER EVENT! 🔥'
+        : `📢 ADMIN MESSAGE · ${String(sender || 'ADMIN').toUpperCase()}`;
+
+    if (this.adminBannerKicker) this.adminBannerKicker.textContent = kicker;
+    if (this.adminBannerText) this.adminBannerText.textContent = String(text);
+    if (this.adminBannerSub) {
+      if (subText) {
+        this.adminBannerSub.textContent = String(subText);
+        this.adminBannerSub.classList.remove('hidden');
+      } else {
+        this.adminBannerSub.textContent = '';
+        this.adminBannerSub.classList.add('hidden');
+      }
+    }
+
+    this.adminBanner.className = `admin-broadcast-banner style-${style}`;
+    void this.adminBanner.offsetWidth;
+    this.adminBanner.classList.add('show');
+
+    if (style === 'event') this.sound?.playRankUp?.();
+    else if (style !== 'gift') this.sound?.playAlert?.('finalMinute');
+
+    const dur = Math.max(3000, Math.min(15000, Number(durationMs) || 6500));
+    this._adminBannerTimer = setTimeout(() => {
+      this.adminBanner?.classList.remove('show');
+      this.adminBanner?.classList.add('fade-out');
+      this._adminBannerFadeTimer = setTimeout(() => {
+        this.adminBanner?.classList.add('hidden');
+        this.adminBanner?.classList.remove('fade-out');
+      }, 320);
+    }, dur);
+  }
+
+  refreshLiveEventPill() {
+    if (!this.liveEventPill || !this.liveEventText) return;
+    const ev = this.network?.getLiveEvent?.();
+    if (!ev || ev.coinMultiplier <= 1 || ev.remainingMs <= 0) {
+      this.liveEventPill.classList.add('hidden');
+      if (this._liveEventTickTimer) {
+        clearInterval(this._liveEventTickTimer);
+        this._liveEventTickTimer = null;
+      }
+      return;
+    }
+    const remSec = Math.max(0, Math.ceil(ev.remainingMs / 1000));
+    const mm = String(Math.floor(remSec / 60)).padStart(2, '0');
+    const ss = String(remSec % 60).padStart(2, '0');
+    this.liveEventText.textContent = `🔥 ${ev.coinMultiplier}X COINS · ${mm}:${ss}`;
+    this.liveEventPill.classList.remove('hidden');
+    if (!this._liveEventTickTimer) {
+      this._liveEventTickTimer = setInterval(() => this.refreshLiveEventPill(), 1000);
     }
   }
 }

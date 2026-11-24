@@ -528,13 +528,13 @@ export class UIManager {
 
     const isRanked = this.profile.state.playMode === 'ranked';
     if (this.modePartyLabel) {
-      this.modePartyLabel.textContent = isRanked ? 'RANKED 1v5 · PARTY ▾' : 'CASUAL · ROULETTE ▾';
+      this.modePartyLabel.textContent = isRanked ? 'RANKED 1v5 ▾' : 'CASUAL · PARTY ▾';
     }
     if (this.modePartyBtn) {
       this.modePartyBtn.classList.toggle('is-ranked', isRanked);
     }
     if (this.playModeSub) {
-      this.playModeSub.textContent = isRanked ? 'RANKED 1v5' : isChristmasEventActive() ? '6-MODE ROULETTE ❄' : '5-MODE ROULETTE';
+      this.playModeSub.textContent = isRanked ? 'RANKED 1v5' : isChristmasEventActive() ? 'ROULETTE ❄' : 'ROULETTE';
     }
 
     if (!this.activeDrawer) {
@@ -546,15 +546,23 @@ export class UIManager {
 
   refreshNetworkStatus() {
     const count = this.network.getRoster().length;
-    const pingTxt = this.network.transport === 'ws' && this.network.pingMs > 0 ? ` · ${this.network.pingMs}ms` : '';
+    const ms = this.network.transport === 'ws' && this.network.pingMs > 0 ? this.network.pingMs : 0;
+    const pingTxt = ms > 0 ? ` · ${ms}ms` : '';
     const modeLabel =
       this.network.transport === 'ws'
         ? 'ONLINE'
         : this.network.wsState === 'connecting' || this.network.wsState === 'reconnecting'
-        ? 'CONNECTING'
+        ? 'SYNC'
         : 'ROOM';
     const roleTag = this.network.inParty ? (this.network.isHost() ? ' ★HOST' : ' PARTY') : '';
-    this.netTextEl.textContent = `${modeLabel}${roleTag} ${this.network.roomCode} · ${count}/6${pingTxt}`;
+    const fullText = `${modeLabel}${roleTag} ${this.network.roomCode} · ${count}/6${pingTxt}`;
+
+    const pingTone = ms === 0 ? 'idle' : ms <= 90 ? 'good' : ms <= 180 ? 'mid' : 'high';
+    const mobilePingTxt = ms > 0 ? `${ms}ms` : this.network.transport === 'ws' ? '...ms' : 'LOCAL';
+
+    this.netTextEl.innerHTML =
+      `<span class="net-desktop-txt">${fullText}</span>` +
+      `<span class="net-mobile-ping"><span class="ping-dot ${pingTone}"></span>${mobilePingTxt}</span>`;
   }
 
   showLobbyPartyNotice(text, tone = 'ok') {
@@ -2071,7 +2079,7 @@ export class UIManager {
       this.hudRoleCard.classList.toggle('monster', isMonster);
       this.hudRoleCard.classList.toggle('survivor', !isMonster);
       this.hudRoleLabel.textContent = msg.charName.toUpperCase();
-      this.hudGrowthLabel.textContent = isMonster ? `STAGE 1 · ${msg.stageTitle.toUpperCase()}` : 'SURVIVOR · HEALTHY';
+      this.hudGrowthLabel.textContent = isMonster ? `STAGE 1 · ${msg.stageTitle.toUpperCase()}` : 'SURVIVOR';
       this.hudHealthFill.style.width = isMonster ? '20%' : '100%';
       this.hudHealthFill.style.background = isMonster
         ? 'linear-gradient(90deg, #ff591a, #ffcf24)'
@@ -2169,15 +2177,15 @@ export class UIManager {
       const total = msg.total || 5;
       const pct = Math.min(100, Math.round((collected / Math.max(1, total)) * 100));
       this.hudRoleCard.classList.add('ghost');
-      this.hudRoleLabel.textContent = 'GHOST MODE';
-      this.hudGrowthLabel.textContent = `SOUL ORBS · ${collected}/${total} TO REVIVE`;
+      this.hudRoleLabel.textContent = 'GHOST';
+      this.hudGrowthLabel.textContent = `SOULS ${collected}/${total}`;
       this.hudHealthFill.style.width = `${pct}%`;
       this.hudHealthFill.style.background = 'linear-gradient(90deg, #22e3ff, #ffe047)';
-      this.primaryLabel.textContent = 'PHASE DASH';
-      this.primaryHint.textContent = 'SPACE: Phase Dash';
+      this.primaryLabel.textContent = 'DASH';
+      this.primaryHint.textContent = 'SPACE: Dash';
       this.secondaryLabel.textContent = 'DASH';
-      this.secondaryHint.textContent = 'CLICK: Phase Dash';
-      this.hudStateText = `GHOST MODE · COLLECT SOUL ORBS TO REVIVE (${collected}/${total})`;
+      this.secondaryHint.textContent = 'CLICK: Dash';
+      this.hudStateText = `GHOST · SOUL ORBS ${collected}/${total}`;
       this._syncHudPopups();
     } else if (msg.type === 'revived') {
       this.hudRoleCard.classList.remove('ghost');
@@ -2272,7 +2280,7 @@ export class UIManager {
         if (msg.statusText) {
           this.hudStateText = msg.statusText;
         } else if (msg.hidden) {
-          this.hudStateText = 'HIDDEN IN BUSH (INVISIBLE TO OTHERS)';
+          this.hudStateText = 'HIDDEN IN BUSH';
         } else if (msg.coopBoosted) {
           this.hudStateText = 'TEAM SPEED BOOST!';
         } else {
@@ -2441,16 +2449,16 @@ export class UIManager {
       this.resultsSummary.textContent = `❄ SNOWBALL FIGHT · ${summary.ffaWinnerScore || 0} Snowball KOs!`;
     } else if (gm === 'infection' && summary.winner === 'monster') {
       this.resultsHeadline.textContent = 'INFECTED WIN!';
-      this.resultsSummary.textContent = 'All Survivors were mutated into Infected Slimes!';
+      this.resultsSummary.textContent = 'All Survivors were infected!';
     } else if (gm === 'star_rush' && summary.winner === 'survivors' && (summary.teamStars || 0) >= 18) {
       this.resultsHeadline.textContent = 'SURVIVORS WIN!';
-      this.resultsSummary.textContent = 'STAR RUSH · Survivors collected all 18 Golden Stars!';
+      this.resultsSummary.textContent = 'STAR RUSH · 18/18 Stars collected!';
     } else {
       this.resultsHeadline.textContent = summary.winner === 'monster' ? 'MONSTER WINS!' : 'SURVIVORS WIN!';
       this.resultsSummary.textContent =
         summary.winner === 'monster'
-          ? `The Monster caught everyone and reached Growth Stage ${summary.monsterStage}!`
-          : `${summary.survivorsAlive} Survivor${summary.survivorsAlive === 1 ? '' : 's'} outlasted the Monster!`;
+          ? `Monster swept everyone · Stage ${summary.monsterStage}!`
+          : `${summary.survivorsAlive} Survivor${summary.survivorsAlive === 1 ? '' : 's'} escaped!`;
     }
 
     const midStatVal =
@@ -2621,10 +2629,10 @@ export class UIManager {
     this.resultsMatchProg.textContent = summary.tutorialBanner
       ? summary.tutorialBanner
       : tm.ready
-      ? `3/3 MATCHES COMPLETE! Claim "${tm.tierSpec.title}" in REWARDS!`
+      ? `3/3 READY · Claim "${tm.tierSpec.title}" in REWARDS!`
       : tm.step === 2
-      ? `🔥 1 MORE MATCH FOR FREE PACK + ${tm.tierSpec.coins} COINS!`
-      : `3-Match Reward Progress: ${tm.step}/3 (${tm.tierSpec.desc})`;
+      ? `1 MORE MATCH FOR FREE PACK + ${tm.tierSpec.coins}c!`
+      : `3-Match Reward ${tm.step}/3 · ${tm.tierSpec.title}`;
 
     const lobbyBtn = document.getElementById('btn-results-lobby');
     const againBtn = document.getElementById('btn-results-again');

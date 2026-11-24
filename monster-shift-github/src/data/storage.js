@@ -798,11 +798,21 @@ export class ProfileStore {
     return true;
   }
 
-  /** Rewarded "2X COINS" on the results screen: grants the match coins a second time. */
+  /** Rewarded "2X COINS" on the results screen or Admin Gift: grants bonus coins. */
   grantBonusCoins(amount) {
     const n = Math.max(0, Math.floor(amount || 0));
     if (!n) return 0;
     this.state.coins += n;
+    this._save();
+    return n;
+  }
+
+  /** Grants bonus pack(s) directly to the player's inventory (used by targeted Admin Gifts). */
+  grantBonusPack(packId, count = 1) {
+    const allowed = ['xmas_pack', 'slime_pack', 'super_pack', 'neon_pack', 'legendary_pack'];
+    if (!allowed.includes(packId)) return 0;
+    const n = Math.max(1, Math.min(20, Math.floor(count || 1)));
+    this.state.packs[packId] = (this.state.packs[packId] || 0) + n;
     this._save();
     return n;
   }

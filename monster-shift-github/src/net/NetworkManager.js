@@ -20,8 +20,14 @@ export class NetworkManager {
     this.transport = 'local'; // 'ws' | 'tab' | 'local'
     this.wsState = 'idle'; // 'idle' | 'connecting' | 'open' | 'reconnecting'
     this.pingMs = 0;
+    this.socketId = '';
     this.clientMode = 'lobby'; // 'lobby' | 'match'
+    this.clientGameMode = '';
+    this.clientMapName = '';
+    this.clientIsAdmin = false;
     this.serverStats = null;
+    this.onlinePlayers = [];
+    this.spectateActive = false;
     this.liveEvent = { coinMultiplier: 1, endsAt: 0, label: '' };
     this._seenAdminIds = new Set();
     this._pendingAdminAck = new Map();
@@ -331,6 +337,7 @@ export class NetworkManager {
         try {
           const msg = JSON.parse(ev.data);
           if (msg && msg.type === 'pong' && typeof msg.t === 'number') {
+            if (msg.socketId) this.socketId = String(msg.socketId);
             const sample = Math.max(1, Math.min(999, Math.round(performance.now() - msg.t)));
             this.pingMs = this.pingMs ? Math.round(this.pingMs * 0.65 + sample * 0.35) : sample;
             this._emit({ type: 'ping', pingMs: this.pingMs });
@@ -348,11 +355,27 @@ export class NetworkManager {
               liveEvent: msg.liveEvent || null,
               updatedAt: Date.now(),
             };
+            if (Array.isArray(msg.players)) {
+              this.onlinePlayers = msg.players;
+            }
             if (msg.liveEvent) this._applyLiveEventState(msg.liveEvent);
-            this._emit({ type: 'server_stats', stats: this.serverStats });
+            this._emit({ type: 'server_stats', stats: this.serverStats, players: this.onlinePlayers });
             return;
           }
-          if (msg && (msg.type === 'admin_announce' || msg.type === 'admin_grant_coins' || msg.type === 'admin_event_state' || msg.type === 'admin_ack')) {
+          if (msg && msg.type === 'spectate_ctl') {
+            this.spectateActive = Boolean(msg.active);
+            this._emit({ type: 'spectate_ctl', active: this.spectateActive });
+            return;
+          }
+          if (msg && msg.type === 'admin_spectate_frame' && msg.frame) {
+            this._emit({ type: 'admin_spectate_frame', targetId: msg.targetId, targetName: msg.targetName, frame: msg.frame });
+            return;
+          }
+          if (msg && msg.type === 'admin_spectate_ended') {
+            this._emit({ type: 'admin_spectate_ended', targetId: msg.targetId, reason: msg.reason || 'Disconnected' });
+            return;
+          }
+          if (msg && (msg.type === 'admin_announce' || msg.type === 'admin_grant_coins' || msg.type === 'admin_personal_gift' || msg.type === 'admin_event_state' || msg.type === 'admin_ack')) {
             this._handleGlobalAdminMsg(msg);
             return;
           }
@@ -506,8 +529,18 @@ export class NetworkManager {
     const next = mode === 'match' ? 'match' : 'lobby';
     if (this.clientMode !== next) {
       this.clientMode = next;
+      if (next === 'lobby') {
+        this.clientGameMode = '';
+        this.clientMapName = '';
+      }
       this._sendPing();
     }
+  }
+
+  setClientMatchInfo(gameMode = '', mapName = '') {
+    this.clientGameMode = String(gameMode || '');
+    this.clientMapName = String(mapName || '');
+    this._sendPing();
   }
 
   _loadCachedLeaderboard() {
@@ -560,14 +593,96 @@ export class NetworkManager {
     return false;
   }
 
-  requestServerStats() {
+  requestServerStats(includePlayers = false) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try {
-        this.ws.send(JSON.stringify({ type: 'admin_stats' }));
+        this.ws.send(JSON.stringify({ type: 'admin_stats', ...(includePlayers ? { secret: 'ezwin' } : {}) }));
         return true;
       } catch {}
     }
     return false;
+  }
+
+  sendSpectateFrame(frame) {
+    if (!this.spectateActive || !frame) return;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.ws.bufferedAmount < 24576) {
+      try {
+        this.ws.send(JSON.stringify({ type: 'spectate_frame', frame }));
+      } catch {}
+    }
+  }
+
+  startSpectating(targetId) {
+    if (!targetId) return false;
+    if (targetId === 'local_self' || (this.socketId && targetId === this.socketId)) {
+      this._emit({ type: 'admin_ack', action: 'spectate', ok: true, targetId, localSelf: true });
+      return true;
+    }
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      try {
+        this.ws.send(JSON.stringify({ type: 'admin_spectate', secret: 'ezwin', targetId }));
+        return true;
+      } catch {}
+    }
+    return false;
+  }
+
+  stopSpectating() {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      try {
+        this.ws.send(JSON.stringify({ type: 'admin_spectate', secret: 'ezwin', targetId: '' }));
+      } catch {}
+    }
+  }
+
+  sendAdminGiftPlayer({ targetId, targetName = 'Player', coins = 0, packId = '', packCount = 0, reason = '', sender = 'ADMIN' }) {
+    const c = Math.max(0, Math.min(100000, Math.floor(Number(coins) || 0)));
+    const pCount = packId ? Math.max(1, Math.min(20, Math.floor(Number(packCount) || 1))) : 0;
+    if (!c && !pCount) return false;
+    const cleanReason = String(reason || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 80);
+    const cleanSender = String(sender || 'ADMIN').slice(0, 16);
+
+    if (targetId === 'local_self') {
+      const msg = {
+        type: 'admin_personal_gift',
+        id: `local_pgift_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        coins: c,
+        packId,
+        packCount: pCount,
+        reason: cleanReason,
+        sender: cleanSender,
+      };
+      this._handleGlobalAdminMsg(msg);
+      this._emit({ type: 'admin_ack', action: 'gift_player', ok: true, targetName, coins: c, packId, packCount: pCount, localOnly: true });
+      return true;
+    }
+
+    const payload = {
+      type: 'admin_gift_player',
+      secret: 'ezwin',
+      targetId,
+      coins: c,
+      packId,
+      packCount: pCount,
+      reason: cleanReason,
+      sender: cleanSender,
+    };
+    this._dispatchAdminCommand(payload, 'gift_player', (wasOldServer) => {
+      if (this.socketId && targetId === this.socketId) {
+        const msg = {
+          type: 'admin_personal_gift',
+          id: `local_pgift_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          coins: c,
+          packId,
+          packCount: pCount,
+          reason: cleanReason,
+          sender: cleanSender,
+        };
+        this._handleGlobalAdminMsg(msg);
+      }
+      this._emit({ type: 'admin_ack', action: 'gift_player', ok: true, targetName, coins: c, packId, packCount: pCount, localOnly: true, oldServer: wasOldServer });
+    });
+    return true;
   }
 
   getLiveEvent() {
@@ -641,6 +756,20 @@ export class NetworkManager {
         type: 'admin_grant_coins',
         id: msg.id,
         amount,
+        reason: String(msg.reason || '').slice(0, 80),
+        sender: String(msg.sender || 'ADMIN').slice(0, 16),
+      });
+    } else if (msg.type === 'admin_personal_gift') {
+      const coins = Math.max(0, Math.min(100000, Math.floor(Number(msg.coins) || 0)));
+      const packId = String(msg.packId || '');
+      const packCount = packId ? Math.max(1, Math.min(20, Math.floor(Number(msg.packCount) || 1))) : 0;
+      if (!coins && !packCount) return;
+      this._emit({
+        type: 'admin_personal_gift',
+        id: msg.id,
+        coins,
+        packId,
+        packCount,
         reason: String(msg.reason || '').slice(0, 80),
         sender: String(msg.sender || 'ADMIN').slice(0, 16),
       });
@@ -766,7 +895,18 @@ export class NetworkManager {
   _sendPing() {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try {
-        this.ws.send(JSON.stringify({ type: 'ping', t: performance.now(), mode: this.clientMode }));
+        this.ws.send(
+          JSON.stringify({
+            type: 'ping',
+            t: performance.now(),
+            mode: this.clientMode,
+            name: this.localMeta.name || 'Player',
+            rr: this.localMeta.rr || 0,
+            gameMode: this.clientGameMode || '',
+            mapName: this.clientMapName || '',
+            isAdmin: Boolean(this.clientIsAdmin),
+          })
+        );
       } catch {}
     }
   }

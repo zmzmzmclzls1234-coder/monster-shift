@@ -1987,6 +1987,40 @@ export class MatchEngine {
     return { x: dx / len, z: dz / len };
   }
 
+  getSpectateSnapshot() {
+    if (!this.active && !this.celebration) return null;
+    const r1 = (v) => Math.round((v || 0) * 10) / 10;
+    const r2 = (v) => Math.round((v || 0) * 100) / 100;
+    const modeSpec = getGameModeById(this.gameMode);
+    return {
+      mapId: this.currentMap?.id || 'sunny_park',
+      mapName: this.currentMap?.name || 'Sunny Toy Park',
+      gameMode: this.gameMode || 'classic',
+      modeName: modeSpec?.name || 'CLASSIC 1v5',
+      t: Math.max(0, Math.ceil(this.timeRemaining || 0)),
+      hw: this.arena?.halfW || 36,
+      hd: this.arena?.halfD || 29,
+      obs: (this.arena?.colliders || []).map((c) => [r1(c.x), r1(c.z), r1(c.radius)]),
+      bushes: (this.arena?.bushes || []).map((b) => [r1(b.x), r1(b.z), r1(b.radius)]),
+      beacons: (this.arena?.beacons || []).map((b) => [r1(b.x), r1(b.z), b.cooldown <= 0 ? 1 : 0]),
+      orbs: (this.modeOrbs || []).slice(0, 24).map((o) => [r1(o.x), r1(o.z), o.kind === 'star' ? 1 : 0]),
+      ents: (this.entities || []).map((e) => ({
+        n: String(e.name || 'Bot').slice(0, 12),
+        r: e.role === 'monster' ? 'm' : 's',
+        l: e.isLocal ? 1 : 0,
+        b: e.isBot ? 1 : 0,
+        a: e.alive ? 1 : 0,
+        g: e.ghostMode ? 1 : 0,
+        h: e.hiddenBush || e.stealthTimer > 0 || e.camouTimer > 0 ? 1 : 0,
+        x: r1(e.pos?.x),
+        z: r1(e.pos?.z),
+        y: r2(e.yaw),
+        rad: r1(e.radius),
+        st: e.growthStage || 1,
+      })),
+    };
+  }
+
   adminInstantWin() {
     if (!this.active || this.celebration || !this.localEntity) return false;
     this._finishMatch(this.localEntity.role === 'monster' ? 'monster' : 'survivors');
@@ -3600,6 +3634,15 @@ export class MatchEngine {
       }
     }
 
+    // On-demand Admin 2D Spectate stream (~5Hz ONLY while an admin is actively watching this client!)
+    if (this.network.spectateActive) {
+      this._spectateAccum = (this._spectateAccum || 0) + dt;
+      if (this._spectateAccum >= 0.2) {
+        this._spectateAccum = 0;
+        this.network.sendSpectateFrame(this.getSpectateSnapshot());
+      }
+    }
+
     // Lightweight HUD update
     this.hudSyncAccum += dt;
     if (this.hudSyncAccum >= 0.07) {
@@ -3624,31 +3667,31 @@ export class MatchEngine {
         soulCollected: le?.soulCollected || 0,
         soulTarget: le?.soulTarget || 5,
         statusText: inGhost
-          ? `GHOST MODE · COLLECT SOUL ORBS TO REVIVE (${le.soulCollected || 0}/${le.soulTarget || 5})`
+          ? `GHOST · SOUL ORBS ${le.soulCollected || 0}/${le.soulTarget || 5}`
           : !le?.alive && (le?.respawnTimer || 0) > 0
-          ? `RESPAWNING IN ${Math.max(1, Math.ceil(le.respawnTimer))}s...`
+          ? `RESPAWNING IN ${Math.max(1, Math.ceil(le.respawnTimer))}s`
           : this.gameMode === 'star_rush'
-          ? `★ STAR RUSH · TEAM STARS: ${this.teamStars}/${this.starGoal}`
+          ? `★ STARS ${this.teamStars}/${this.starGoal}`
           : this.gameMode === 'slime_brawl'
-          ? `👑 SLIME BRAWL · MASS: ${le?.brawlMass || 0} · STAGE ${le?.growthStage || 1}`
+          ? `MASS ${le?.brawlMass || 0} · STAGE ${le?.growthStage || 1}`
           : this.gameMode === 'snowball_fight'
-          ? `❄ SNOWBALL FIGHT · KOs: ${le?.snowKOs || 0}/${this.snowKoGoal} · HP: ${'♥'.repeat(Math.max(0, le?.snowHp ?? 0))}`
+          ? `❄ KOs ${le?.snowKOs || 0}/${this.snowKoGoal} · ${'♥'.repeat(Math.max(0, le?.snowHp ?? 0))}`
           : le?.snareTimer > 0
           ? 'SNARED!'
           : le?.bubbledTimer > 0
-          ? 'TRAPPED IN BUBBLE!'
+          ? 'BUBBLED!'
           : le?.frozenTimer > 0
-          ? 'FROZEN SLOW!'
+          ? 'FROZEN!'
           : this.timeRemaining <= 15
-          ? 'FINAL 15s · ALL PLAYERS REVEALED!'
+          ? 'FINAL 15s · ALL REVEALED!'
           : le?.bushExposed
-          ? 'BUSH EXPOSED! LEAVE BUSH NOW!'
+          ? 'EXPOSED! LEAVE BUSH!'
           : le?.role === 'survivor' && le.hiddenBush && le.bushCampTimer >= 2.8
-          ? `MOVE SOON! EXPOSED IN ${Math.max(1, Math.ceil(5 - le.bushCampTimer))}s`
+          ? `EXPOSED IN ${Math.max(1, Math.ceil(5 - le.bushCampTimer))}s`
           : le?.disguiseTimer > 0
-          ? 'DISGUISED AS PROP'
+          ? 'DISGUISED'
           : le?.shieldTimer > 0
-          ? 'AEGIS SHIELD ACTIVE'
+          ? 'SHIELD ACTIVE'
           : null,
         alive: Boolean(le?.alive),
       });

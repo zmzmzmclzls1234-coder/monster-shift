@@ -1,5 +1,5 @@
 import * as THREE from '../vendor/three.module.min.js';
-import { getAvailableCasualModes } from './data/catalog.js';
+import { getAvailableCasualModes, getMapById, getPackById } from './data/catalog.js';
 import { ProfileStore } from './data/storage.js';
 import { SoundManager } from './audio/SoundManager.js';
 import { SceneManager } from './engine/SceneManager.js';
@@ -251,6 +251,7 @@ class MonsterShiftApp {
         },
         onInstantWin: () => this.match.adminInstantWin(),
         onMaxGrowth: () => this.match.adminMaxGrowth(),
+        getLocalSpectateFrame: () => (this.mode === 'match' && (this.match.active || this.match.celebration) ? this.match.getSpectateSnapshot() : null),
       },
     });
 
@@ -279,6 +280,32 @@ class MonsterShiftApp {
           style: 'gift',
           durationMs: 6500,
         });
+      } else if (evt.type === 'admin_personal_gift') {
+        const parts = [];
+        if (evt.coins > 0) {
+          const added = this.profile.grantBonusCoins(evt.coins);
+          if (added > 0) parts.push(`+${added.toLocaleString()} COINS`);
+        }
+        if (evt.packId && evt.packCount > 0) {
+          const addedP = this.profile.grantBonusPack(evt.packId, evt.packCount);
+          if (addedP > 0) {
+            const pSpec = getPackById(evt.packId);
+            parts.push(`+${addedP} ${(pSpec?.name || 'PACK').toUpperCase()}`);
+          }
+        }
+        if (parts.length > 0) {
+          this.ui.refreshLobbyChrome();
+          this.sound.playVictory();
+          this.sound.playCoin();
+          setTimeout(() => this.sound.playCoin(), 150);
+          this.ui.showAdminBroadcast({
+            text: `PERSONAL GIFT: ${parts.join(' & ')}!`,
+            subText: evt.reason || `SPECIAL REWARD JUST FOR YOU FROM ${(evt.sender || 'ADMIN').toUpperCase()}!`,
+            sender: evt.sender || 'ADMIN',
+            style: 'gift',
+            durationMs: 7000,
+          });
+        }
       } else if (evt.type === 'admin_event_state') {
         this.ui.refreshLiveEventPill();
       }
@@ -309,6 +336,7 @@ class MonsterShiftApp {
     if (!this.network.inParty || this.network.isHost()) {
       this.network.partyPlayMode = this.profile.state.playMode === 'ranked' ? 'ranked' : 'casual';
     }
+    this.network.clientIsAdmin = this.profile.isAdminUnlocked();
     this.network.setLocalMeta({
       name: this.profile.state.playerName,
       rr: this.profile.state.ranked?.rr || 0,
@@ -662,6 +690,7 @@ class MonsterShiftApp {
     this.ui?.setPauseMenuVisible(false);
     this.mode = 'match';
     this.network.setClientMode('match');
+    this.network.setClientMatchInfo(config.gameMode || 'classic', getMapById(config.mapId)?.name || 'Sunny Park');
     this.intro.stop();
     this.lobbyStage.leave();
     this.particles.clear();

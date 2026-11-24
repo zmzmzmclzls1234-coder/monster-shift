@@ -16,24 +16,46 @@ export class AdminPanel {
     this._statsRequestedOnce = false;
     this._eventMult = 2;
     this._eventMins = 10;
+    this._spectateTarget = null; // { id, name }
+    this._spectateFrame = null;
+    this._localSpectateTimer = null;
+    this._giftTarget = null; // { id, name }
 
     this._buildDom();
     this.profile.subscribe(() => {
       // Never wipe text inputs inside ADMIN.EXE while the admin is actively typing!
       const active = document.activeElement;
-      if (active && this.panel?.contains(active) && active.tagName === 'INPUT') return;
+      if (active && this.panel?.contains(active) && (active.tagName === 'INPUT' || active.tagName === 'SELECT')) return;
       this.sync();
     });
     this.network?.subscribe((evt) => {
       if (evt.type === 'server_stats' || evt.type === 'status' || evt.type === 'ping' || evt.type === 'admin_event_state') {
         if (!this.minimized && this.profile.isAdminUnlocked()) {
           this._patchLiveTelemetry();
+          this._patchOnlinePlayersList();
           this._patchLiveEventStatus();
+        }
+      } else if (evt.type === 'admin_spectate_frame') {
+        if (this._spectateTarget && (!evt.targetId || evt.targetId === this._spectateTarget.id)) {
+          this._spectateFrame = evt.frame;
+          this._renderSpectateCanvas();
+        }
+      } else if (evt.type === 'admin_spectate_ended') {
+        if (this._spectateTarget && evt.targetId === this._spectateTarget.id) {
+          this.log(`SPECTATE ENDED: ${evt.reason || 'LEFT'}`);
+          this._stopSpectate(false);
         }
       } else if (evt.type === 'admin_ack') {
         const suffix = evt.localOnly ? ' (LOCAL · PUSH server.js!)' : ` (${evt.reached || 1} ONLINE)`;
         if (evt.action === 'broadcast') this.log(`SENT GLOBAL MSG${suffix}`);
         else if (evt.action === 'grant_coins') this.log(`GAVE +${evt.amount}c TO ALL${suffix}`);
+        else if (evt.action === 'gift_player') {
+          const what = [evt.coins > 0 ? `+${evt.coins}c` : '', evt.packCount > 0 ? `+${evt.packCount}p` : ''].filter(Boolean).join(' ');
+          this.log(evt.ok ? `GIFTED ${what} -> ${evt.targetName || 'PLAYER'}${evt.localOnly ? ' (LOCAL)' : ''}` : 'TARGET PLAYER OFFLINE');
+        }
+        else if (evt.action === 'spectate') {
+          if (!evt.ok) this.log('SPECTATE FAILED: PLAYER OFFLINE');
+        }
         else if (evt.action === 'start_event') this.log(`STARTED ${evt.coinMultiplier}X EVENT${suffix}`);
         else if (evt.action === 'stop_event') this.log(`STOPPED COIN EVENT${suffix}`);
         this._patchLiveEventStatus();
@@ -142,6 +164,7 @@ export class AdminPanel {
   minimize() {
     this.minimized = true;
     this._stopStatsPolling();
+    this._stopSpectate(false);
     this.sync();
   }
 
@@ -160,8 +183,453 @@ export class AdminPanel {
 
   _pollServerStats() {
     if (!this.network || this.minimized || !this.profile.isAdminUnlocked()) return;
-    const sent = this.network.requestServerStats?.();
+    const sent = this.network.requestServerStats?.(true);
     if (sent) this._statsRequestedOnce = true;
+  }
+
+  _getOnlineList() {
+    const serverList = this.network?.onlinePlayers;
+    if (Array.isArray(serverList) && serverList.length > 0) {
+      return serverList;
+    }
+    return [
+      {
+        id: 'local_self',
+        name: this.profile.state.playerName || 'Player',
+        rr: this.profile.state.ranked?.rr || 0,
+        mode: this.network?.clientMode || 'lobby',
+        gameMode: this.network?.clientGameMode || '',
+        mapName: this.network?.clientMapName || '',
+        room: this.network?.inParty ? this.network.roomCode : 'SOLO',
+        isAdmin: true,
+        isSelfFallback: true,
+      },
+    ];
+  }
+
+  _startSpectate(target) {
+    if (!target || !target.id) return;
+    this._stopSpectate(false);
+    this._spectateTarget = { id: target.id, name: target.name || 'Player' };
+    this._spectateFrame = null;
+
+    const isSelf = target.id === 'local_self' || (this.network?.socketId && target.id === this.network.socketId);
+    if (isSelf) {
+      this._spectateFrame = this.cb.getLocalSpectateFrame?.() || null;
+      this._localSpectateTimer = setInterval(() => {
+        if (!this._spectateTarget) return;
+        this._spectateFrame = this.cb.getLocalSpectateFrame?.() || null;
+        this._renderSpectateCanvas();
+      }, 150);
+      this.log(`SPECTATING (LOCAL): ${this._spectateTarget.name}`);
+    } else {
+      this.network?.startSpectating?.(target.id);
+      this.log(`SPECTATING: ${this._spectateTarget.name}...`);
+    }
+    this._patchOnlinePlayersList();
+    this._patchSpectateSection();
+  }
+
+  _stopSpectate(rerender = true) {
+    if (this._localSpectateTimer) {
+      clearInterval(this._localSpectateTimer);
+      this._localSpectateTimer = null;
+    }
+    if (this._spectateTarget) {
+      const wasRemote = this._spectateTarget.id !== 'local_self' && this._spectateTarget.id !== this.network?.socketId;
+      this._spectateTarget = null;
+      this._spectateFrame = null;
+      if (wasRemote) this.network?.stopSpectating?.();
+    }
+    if (rerender) {
+      this._patchOnlinePlayersList();
+      this._patchSpectateSection();
+    }
+  }
+
+  _formatOnlinePlayersHtml() {
+    const list = this._getOnlineList();
+    const mySockId = this.network?.socketId || '';
+    const usingFallback = list.length === 1 && list[0].isSelfFallback;
+    const rows = list
+      .map((p) => {
+        const isMe = p.id === 'local_self' || (mySockId && p.id === mySockId);
+        const inMatch = p.mode === 'match';
+        const sub = inMatch
+          ? `MATCH${p.gameMode ? ` · ${p.gameMode.replace('_', ' ').toUpperCase()}` : ''}`
+          : `LOBBY · ${p.rr || 0} RR`;
+        const watching = this._spectateTarget?.id === p.id;
+        const gifting = this._giftTarget?.id === p.id;
+        return `
+          <div class="adm-pl-row ${watching ? 'watching' : ''}">
+            <span class="adm-pl-dot ${inMatch ? 'match' : 'lobby'}"></span>
+            <div class="adm-pl-info">
+              <div class="adm-pl-name">${p.name}${isMe ? ' <span class="adm-you-tag">YOU</span>' : ''}</div>
+              <div class="adm-pl-sub">${sub}</div>
+            </div>
+            <div class="adm-pl-btns">
+              <button class="adm-pl-btn watch ${watching ? 'on' : ''}" data-watch-id="${p.id}" data-watch-name="${p.name}" type="button" title="Live 2D Spectate">${watching ? 'LIVE' : 'WATCH'}</button>
+              <button class="adm-pl-btn gift ${gifting ? 'on' : ''}" data-gift-id="${p.id}" data-gift-name="${p.name}" type="button" title="Send Personal Reward">GIFT</button>
+            </div>
+          </div>
+        `;
+      })
+      .join('');
+    return `
+      <div class="adm-pl-list">${rows}</div>
+      ${usingFallback ? '<div class="adm-pl-hint">Push server.js to see all live remote players.</div>' : ''}
+    `;
+  }
+
+  _patchOnlinePlayersList() {
+    const slot = this.panel?.querySelector('#adm-players-slot');
+    if (!slot) return;
+    slot.innerHTML = this._formatOnlinePlayersHtml();
+    slot.querySelectorAll('[data-watch-id]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.sound?.playClick();
+        const id = btn.dataset.watchId;
+        const name = btn.dataset.watchName || 'Player';
+        if (this._spectateTarget?.id === id) this._stopSpectate(true);
+        else this._startSpectate({ id, name });
+      });
+    });
+    slot.querySelectorAll('[data-gift-id]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.sound?.playClick();
+        const id = btn.dataset.giftId;
+        const name = btn.dataset.giftName || 'Player';
+        if (this._giftTarget?.id === id) this._giftTarget = null;
+        else this._giftTarget = { id, name };
+        this._patchOnlinePlayersList();
+        this._patchTargetGiftSection();
+      });
+    });
+  }
+
+  _patchSpectateSection() {
+    const box = this.panel?.querySelector('#adm-spectate-slot');
+    if (!box) return;
+    if (!this._spectateTarget) {
+      box.innerHTML = '';
+      return;
+    }
+    box.innerHTML = `
+      <div class="adm-spec-box">
+        <div class="adm-spec-head">
+          <span class="adm-spec-title">● 2D SPEC · ${this._spectateTarget.name}</span>
+          <span id="adm-spec-meta" class="adm-spec-meta">WAITING...</span>
+          <button id="adm-spec-stop" class="adm-mini-refresh" type="button" title="Stop Spectating">✕</button>
+        </div>
+        <canvas id="adm-spectate-canvas" class="adm-spec-canvas" width="286" height="206"></canvas>
+        <div class="adm-spec-legend">
+          <span><i style="background:#ff3d5c"></i>MON</span>
+          <span><i style="background:#ffe047"></i>YOU</span>
+          <span><i style="background:#38e4ff"></i>SURV</span>
+          <span><i style="background:#29ba5b"></i>BUSH</span>
+          <span><i style="background:#8a99b8"></i>WALL</span>
+        </div>
+      </div>
+    `;
+    box.querySelector('#adm-spec-stop')?.addEventListener('click', () => {
+      this.sound?.playClick();
+      this._stopSpectate(true);
+    });
+    this._renderSpectateCanvas();
+  }
+
+  _renderSpectateCanvas() {
+    const canvas = this.panel?.querySelector('#adm-spectate-canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const W = canvas.width;
+    const H = canvas.height;
+    const metaEl = this.panel?.querySelector('#adm-spec-meta');
+    const frame = this._spectateFrame;
+
+    ctx.clearRect(0, 0, W, H);
+    if (!frame) {
+      ctx.fillStyle = '#091511';
+      ctx.fillRect(0, 0, W, H);
+      ctx.strokeStyle = 'rgba(0,255,136,0.22)';
+      ctx.strokeRect(4, 4, W - 8, H - 8);
+      ctx.fillStyle = '#7ac9a3';
+      ctx.font = 'bold 11px Consolas, monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('PLAYER IS IN LOBBY OR SYNCING...', W / 2, H / 2 - 4);
+      ctx.fillStyle = '#5ee6a5';
+      ctx.font = '10px Consolas, monospace';
+      ctx.fillText('2D MAP APPEARS WHEN MATCH STARTS', W / 2, H / 2 + 14);
+      if (metaEl) metaEl.textContent = 'IN LOBBY';
+      return;
+    }
+
+    const mm = String(Math.floor((frame.t || 0) / 60)).padStart(2, '0');
+    const ss = String((frame.t || 0) % 60).padStart(2, '0');
+    if (metaEl) metaEl.textContent = `${(frame.modeName || 'MATCH').slice(0, 11)} · ${mm}:${ss}`;
+
+    const themes = {
+      sunny_park: { floor: '#3ea84a', plaza: '#e6d8b5', obs: '#d4843a', bush: 'rgba(22, 138, 62, 0.56)', bushStroke: '#7ef266' },
+      candy_land: { floor: '#cf74a6', plaza: '#fce0ef', obs: '#ff529a', bush: 'rgba(219, 64, 146, 0.45)', bushStroke: '#ffb8df' },
+      frost_island: { floor: '#64b2d9', plaza: '#e2f7ff', obs: '#2a85c9', bush: 'rgba(30, 158, 152, 0.5)', bushStroke: '#9ef7f2' },
+      sunset_volcano: { floor: '#a85a32', plaza: '#e8c499', obs: '#662b1c', bush: 'rgba(72, 140, 42, 0.55)', bushStroke: '#ffb247' },
+    };
+    const pal = themes[frame.mapId] || themes.sunny_park;
+
+    const pad = 8;
+    const hw = Math.max(10, Number(frame.hw) || 36);
+    const hd = Math.max(10, Number(frame.hd) || 29);
+    const scale = Math.min((W - pad * 2) / (hw * 2), (H - pad * 2) / (hd * 2));
+    const cx = W / 2;
+    const cy = H / 2;
+    const toX = (wx) => cx + wx * scale;
+    const toY = (wz) => cy + wz * scale;
+
+    // Arena background
+    ctx.fillStyle = '#09121a';
+    ctx.fillRect(0, 0, W, H);
+    const ax = toX(-hw);
+    const ay = toY(-hd);
+    const aw = hw * 2 * scale;
+    const ah = hd * 2 * scale;
+    ctx.fillStyle = pal.floor;
+    ctx.fillRect(ax, ay, aw, ah);
+
+    // Subtle tactical grid
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 1;
+    for (let gx = -30; gx <= 30; gx += 10) {
+      const px = toX(gx);
+      ctx.beginPath(); ctx.moveTo(px, ay); ctx.lineTo(px, ay + ah); ctx.stroke();
+    }
+    for (let gz = -20; gz <= 20; gz += 10) {
+      const py = toY(gz);
+      ctx.beginPath(); ctx.moveTo(ax, py); ctx.lineTo(ax + aw, py); ctx.stroke();
+    }
+
+    // Central sunny plaza circle
+    ctx.beginPath();
+    ctx.arc(cx, cy, 8.2 * scale, 0, Math.PI * 2);
+    ctx.fillStyle = pal.plaza;
+    ctx.globalAlpha = 0.72;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = 'rgba(20,25,43,0.45)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Arena fence outline
+    ctx.strokeStyle = '#14192b';
+    ctx.lineWidth = 2.5;
+    ctx.strokeRect(ax, ay, aw, ah);
+
+    // 1. Obstacles / Structures
+    for (const o of frame.obs || []) {
+      const ox = toX(o[0]);
+      const oy = toY(o[1]);
+      const or = Math.max(2.5, o[2] * scale);
+      ctx.beginPath();
+      ctx.arc(ox, oy, or, 0, Math.PI * 2);
+      ctx.fillStyle = pal.obs;
+      ctx.fill();
+      ctx.strokeStyle = '#14192b';
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+    }
+
+    // 2. Bushes (translucent so hidden Survivors inside are visible!)
+    for (const b of frame.bushes || []) {
+      const bx = toX(b[0]);
+      const by = toY(b[1]);
+      const br = Math.max(4, b[2] * scale);
+      ctx.beginPath();
+      ctx.arc(bx, by, br, 0, Math.PI * 2);
+      ctx.fillStyle = pal.bush;
+      ctx.fill();
+      ctx.save();
+      ctx.setLineDash([3, 2]);
+      ctx.strokeStyle = pal.bushStroke;
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // 3. Beacons & Mode Orbs (Stars / Jellies)
+    for (const bc of frame.beacons || []) {
+      const bx = toX(bc[0]);
+      const by = toY(bc[1]);
+      ctx.fillStyle = bc[2] ? '#ffe047' : 'rgba(255,224,71,0.3)';
+      ctx.strokeStyle = '#14192b';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(bx, by - 4);
+      ctx.lineTo(bx + 4, by);
+      ctx.lineTo(bx, by + 4);
+      ctx.lineTo(bx - 4, by);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+    for (const orb of frame.orbs || []) {
+      ctx.beginPath();
+      ctx.arc(toX(orb[0]), toY(orb[1]), 2.6, 0, Math.PI * 2);
+      ctx.fillStyle = orb[2] ? '#ffe047' : '#ff7ae2';
+      ctx.fill();
+    }
+
+    // 4. Entities (Survivors first, then Monsters on top!)
+    const ents = (frame.ents || []).slice().sort((a, b) => (a.r === 'm' ? 1 : 0) - (b.r === 'm' ? 1 : 0));
+    for (const e of ents) {
+      const ex = toX(e.x);
+      const ey = toY(e.z);
+      const isMon = e.r === 'm';
+
+      if (!e.a && !e.g) {
+        // Eliminated X
+        ctx.strokeStyle = '#ff4757';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(ex - 3.5, ey - 3.5); ctx.lineTo(ex + 3.5, ey + 3.5);
+        ctx.moveTo(ex + 3.5, ey - 3.5); ctx.lineTo(ex - 3.5, ey + 3.5);
+        ctx.stroke();
+        continue;
+      }
+
+      if (e.g && !e.a) {
+        // Ghost Mode
+        ctx.beginPath();
+        ctx.arc(ex, ey, 4.5, 0, Math.PI * 2);
+        ctx.strokeStyle = '#7df9ff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        continue;
+      }
+
+      const dotR = isMon ? Math.max(5.5, (e.rad || 1.1) * scale * 1.15) : 4.6;
+
+      // Highlight ring for the real human player being spectated
+      if (e.l) {
+        ctx.beginPath();
+        ctx.arc(ex, ey, dotR + 3.2, 0, Math.PI * 2);
+        ctx.strokeStyle = '#ffe047';
+        ctx.lineWidth = 2.2;
+        ctx.stroke();
+      }
+
+      // Direction pointer
+      const dirX = Math.sin(e.y || 0);
+      const dirZ = Math.cos(e.y || 0);
+      ctx.beginPath();
+      ctx.moveTo(ex, ey);
+      ctx.lineTo(ex + dirX * (dotR + 5), ey + dirZ * (dotR + 5));
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Main dot
+      ctx.beginPath();
+      ctx.arc(ex, ey, dotR, 0, Math.PI * 2);
+      ctx.fillStyle = isMon ? '#ff3d5c' : e.l ? '#ffe047' : '#38e4ff';
+      ctx.globalAlpha = e.h ? 0.65 : 1;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = '#14192b';
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+
+      // Compact tag for Monster or Human target
+      if (isMon || e.l) {
+        ctx.font = 'bold 8.5px Consolas, monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#14192b';
+        ctx.fillText(isMon ? `M·${e.n.slice(0, 7)}` : e.n.slice(0, 8), ex + 0.8, ey - dotR - 3.2);
+        ctx.fillStyle = isMon ? '#ff99a8' : '#ffe047';
+        ctx.fillText(isMon ? `M·${e.n.slice(0, 7)}` : e.n.slice(0, 8), ex, ey - dotR - 4);
+      }
+    }
+  }
+
+  _patchTargetGiftSection() {
+    const box = this.panel?.querySelector('#adm-target-gift-slot');
+    if (!box) return;
+    if (!this._giftTarget) {
+      box.innerHTML = '';
+      return;
+    }
+    const t = this._giftTarget;
+    box.innerHTML = `
+      <div class="adm-pg-box">
+        <div class="adm-spec-head">
+          <span class="adm-spec-title" style="color:#ffe047">🎁 GIFT -> ${t.name}</span>
+          <button id="adm-pg-close" class="adm-mini-refresh" type="button">✕</button>
+        </div>
+        <div class="adm-input-row">
+          <input id="adm-pg-coins" class="adm-input amt" type="number" min="0" max="100000" value="500" />
+          <select id="adm-pg-pack" class="adm-input">
+            <option value="">No Pack</option>
+            <option value="xmas_pack">❄ Xmas Pack</option>
+            <option value="slime_pack">Slime Pack</option>
+            <option value="super_pack">Super Pack</option>
+            <option value="neon_pack">Neon Pack</option>
+            <option value="legendary_pack">Legendary Pack</option>
+          </select>
+          <input id="adm-pg-pcount" class="adm-input" style="flex:0 0 38px;text-align:center" type="number" min="1" max="20" value="1" title="Pack Count" />
+        </div>
+        <div class="adm-preset-row">
+          <button class="adm-preset-btn" data-pg-c="0" type="button">0c</button>
+          <button class="adm-preset-btn" data-pg-c="500" type="button">+500c</button>
+          <button class="adm-preset-btn" data-pg-c="1000" type="button">+1Kc</button>
+          <button class="adm-preset-btn" data-pg-c="5000" type="button">+5Kc</button>
+        </div>
+        <div class="adm-input-row">
+          <input id="adm-pg-reason" class="adm-input" type="text" maxlength="80" placeholder="Personal note (optional)..." autocomplete="off" />
+          <button id="adm-pg-send" class="adm-send-btn gold" type="button">SEND</button>
+        </div>
+      </div>
+    `;
+    const coinsEl = box.querySelector('#adm-pg-coins');
+    const packEl = box.querySelector('#adm-pg-pack');
+    const pCountEl = box.querySelector('#adm-pg-pcount');
+    const reasonEl = box.querySelector('#adm-pg-reason');
+    box.querySelector('#adm-pg-close')?.addEventListener('click', () => {
+      this.sound?.playClick();
+      this._giftTarget = null;
+      this._patchOnlinePlayersList();
+      this._patchTargetGiftSection();
+    });
+    box.querySelectorAll('[data-pg-c]').forEach((b) => {
+      b.addEventListener('click', () => {
+        this.sound?.playClick();
+        if (coinsEl) coinsEl.value = b.dataset.pgC;
+      });
+    });
+    const doSendPersonal = () => {
+      const coins = Math.max(0, Math.min(100000, Math.floor(Number(coinsEl?.value) || 0)));
+      const packId = packEl?.value || '';
+      const packCount = packId ? Math.max(1, Math.min(20, Math.floor(Number(pCountEl?.value) || 1))) : 0;
+      if (!coins && !packCount) return;
+      const reason = (reasonEl?.value || '').trim();
+      this.sound?.playCoin();
+      this.network?.sendAdminGiftPlayer?.({
+        targetId: t.id,
+        targetName: t.name,
+        coins,
+        packId,
+        packCount,
+        reason,
+        sender: this.profile.state.playerName || 'ADMIN',
+      });
+      if (reasonEl) reasonEl.value = '';
+      this.log(`SENDING GIFT -> ${t.name}...`);
+    };
+    box.querySelector('#adm-pg-send')?.addEventListener('click', doSendPersonal);
+    reasonEl?.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') { e.preventDefault(); doSendPersonal(); }
+    });
+    coinsEl?.addEventListener('keydown', (e) => e.stopPropagation());
+    pCountEl?.addEventListener('keydown', (e) => e.stopPropagation());
   }
 
   _formatTelemetryHtml() {
@@ -277,6 +745,11 @@ export class AdminPanel {
         <div id="adm-telemetry-slot">${this._formatTelemetryHtml()}</div>
       </div>
 
+      <div class="adm-sec-title">// ONLINE PLAYERS (WATCH / GIFT)</div>
+      <div id="adm-players-slot"></div>
+      <div id="adm-spectate-slot"></div>
+      <div id="adm-target-gift-slot"></div>
+
       <button id="adm-master-toggle" class="adm-master-btn ${cfg.enabled ? '' : 'off'}" type="button">
         <span>ADMIN MODE</span>
         <span class="adm-master-tag">${cfg.enabled ? 'ACTIVE' : 'DISABLED'}</span>
@@ -360,11 +833,16 @@ export class AdminPanel {
 
     this.bodyEl.querySelector('#adm-refresh-stats')?.addEventListener('click', () => {
       this.sound?.playClick();
-      const ok = this.network?.requestServerStats?.();
+      const ok = this.network?.requestServerStats?.(true);
       this._statsRequestedOnce = Boolean(ok);
       this._patchLiveTelemetry();
+      this._patchOnlinePlayersList();
       this.log(ok ? 'FETCHED LIVE SERVER TELEMETRY' : 'SERVER DISCONNECTED');
     });
+
+    this._patchOnlinePlayersList();
+    this._patchSpectateSection();
+    this._patchTargetGiftSection();
 
     this.bodyEl.querySelector('#adm-master-toggle')?.addEventListener('click', () => {
       this.sound?.playClick();

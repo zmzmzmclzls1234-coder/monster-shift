@@ -111,10 +111,14 @@ const server = http.createServer((req, res) => {
 // - Instant server-side ping/pong for accurate RTT measurement & dead-reckoning compensation
 const wss = new WebSocketServer({ server, path: '/ws', perMessageDeflate: false });
 const clientRoom = new Map();       // ws -> roomCode
-const clientState = new Map();      // ws -> { mode: 'lobby' | 'match', joinedAt }
+const clientState = new Map();      // ws -> { id, name, rr, mode, gameMode, mapName, isAdmin, joinedAt }
+const idToClient = new Map();       // socketId -> ws
 const clientPlayerId = new Map();   // ws -> persistent playerId
 const globalLeaderboard = new Map();// playerId -> { id, name, rr, updatedAt }
 const rooms = new Map();            // roomCode -> Set<ws>
+const spectateTarget = new Map();   // adminWs -> targetSocketId
+const targetSpectators = new Map(); // targetSocketId -> Set<adminWs>
+let nextSocketSeq = 1;
 let peakOnline = 0;
 
 // Live Admin Abuse Global Events (authenticated with ADMIN_SECRET; broadcasts to ALL online sockets!)
@@ -248,6 +252,60 @@ function getLiveStats() {
   };
 }
 
+function getOnlinePlayersList() {
+  const list = [];
+  for (const [sock, st] of clientState) {
+    if (sock.readyState !== 1) continue;
+    const room = clientRoom.get(sock) || 'PARK';
+    list.push({
+      id: st.id,
+      name: st.name || 'Player',
+      rr: st.rr || 0,
+      mode: st.mode || 'lobby',
+      gameMode: st.gameMode || '',
+      mapName: st.mapName || '',
+      room: room.startsWith('_') ? 'SOLO' : room,
+      isAdmin: Boolean(st.isAdmin),
+    });
+  }
+  list.sort((a, b) => (b.mode === 'match' ? 1 : 0) - (a.mode === 'match' ? 1 : 0) || b.rr - a.rr);
+  return list.slice(0, 80);
+}
+
+function stopSpectating(adminWs) {
+  const prevTargetId = spectateTarget.get(adminWs);
+  if (!prevTargetId) return;
+  spectateTarget.delete(adminWs);
+  const set = targetSpectators.get(prevTargetId);
+  if (set) {
+    set.delete(adminWs);
+    if (set.size === 0) {
+      targetSpectators.delete(prevTargetId);
+      const targetWs = idToClient.get(prevTargetId);
+      if (targetWs && targetWs.readyState === 1) {
+        try {
+          targetWs.send(JSON.stringify({ type: 'spectate_ctl', active: false }));
+        } catch {}
+      }
+    }
+  }
+}
+
+function startSpectating(adminWs, targetId) {
+  stopSpectating(adminWs);
+  const cleanId = String(targetId || '').trim();
+  if (!cleanId) return false;
+  const targetWs = idToClient.get(cleanId);
+  if (!targetWs || targetWs.readyState !== 1) return false;
+  spectateTarget.set(adminWs, cleanId);
+  if (!targetSpectators.has(cleanId)) targetSpectators.set(cleanId, new Set());
+  targetSpectators.get(cleanId).add(adminWs);
+  try {
+    targetWs.send(JSON.stringify({ type: 'spectate_ctl', active: true }));
+  } catch {}
+  return true;
+}
+
 function joinClientRoom(ws, nextRoom) {
   const prev = clientRoom.get(ws);
   if (prev === nextRoom) return;
@@ -262,6 +320,23 @@ function joinClientRoom(ws, nextRoom) {
 }
 
 function removeClient(ws) {
+  stopSpectating(ws);
+  const st = clientState.get(ws);
+  if (st?.id) {
+    idToClient.delete(st.id);
+    const watchers = targetSpectators.get(st.id);
+    if (watchers) {
+      for (const adminWs of watchers) {
+        spectateTarget.delete(adminWs);
+        if (adminWs.readyState === 1) {
+          try {
+            adminWs.send(JSON.stringify({ type: 'admin_spectate_ended', targetId: st.id, reason: 'Player disconnected' }));
+          } catch {}
+        }
+      }
+      targetSpectators.delete(st.id);
+    }
+  }
   const prev = clientRoom.get(ws);
   if (prev && rooms.has(prev)) {
     const set = rooms.get(prev);
@@ -277,7 +352,18 @@ wss.on('connection', (ws, req) => {
   try {
     req?.socket?.setNoDelay?.(true);
   } catch {}
-  clientState.set(ws, { mode: 'lobby', joinedAt: Date.now() });
+  const sockId = `s_${nextSocketSeq++}_${Math.random().toString(36).slice(2, 5)}`;
+  idToClient.set(sockId, ws);
+  clientState.set(ws, {
+    id: sockId,
+    name: 'Player',
+    rr: 0,
+    mode: 'lobby',
+    gameMode: '',
+    mapName: '',
+    isAdmin: false,
+    joinedAt: Date.now(),
+  });
   peakOnline = Math.max(peakOnline, clientState.size);
   joinClientRoom(ws, 'PARK');
 
@@ -299,22 +385,117 @@ wss.on('connection', (ws, req) => {
     }
     if (!parsed || typeof parsed !== 'object') return;
 
-    // Instant RTT ping/pong reply + lightweight client mode sync (never broadcast to room!)
+    // Instant RTT ping/pong reply + lightweight client presence sync (never broadcast to room!)
     if (parsed.type === 'ping') {
       const st = clientState.get(ws);
-      if (st && (parsed.mode === 'match' || parsed.mode === 'lobby')) {
-        st.mode = parsed.mode;
+      if (st) {
+        if (parsed.mode === 'match' || parsed.mode === 'lobby') st.mode = parsed.mode;
+        if (typeof parsed.name === 'string' && parsed.name.trim()) st.name = sanitizeLbName(parsed.name);
+        if (typeof parsed.rr === 'number' && Number.isFinite(parsed.rr)) st.rr = Math.max(0, Math.min(5000, Math.floor(parsed.rr)));
+        if (typeof parsed.gameMode === 'string') st.gameMode = sanitizeAdminText(parsed.gameMode, 24);
+        if (typeof parsed.mapName === 'string') st.mapName = sanitizeAdminText(parsed.mapName, 28);
+        if (typeof parsed.isAdmin === 'boolean') st.isAdmin = parsed.isAdmin;
       }
       if (ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'pong', t: parsed.t }));
+        ws.send(JSON.stringify({ type: 'pong', t: parsed.t, socketId: st?.id || '' }));
       }
       return;
     }
 
-    // Live player telemetry request for Admin Panel (direct reply, never broadcast!)
+    // Live player telemetry + Online Players list for Admin Panel (direct reply, never broadcast!)
     if (parsed.type === 'admin_stats') {
       if (ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'admin_stats', ...getLiveStats() }));
+        const includePlayers = isValidAdminSecret(parsed.secret);
+        ws.send(
+          JSON.stringify({
+            type: 'admin_stats',
+            ...getLiveStats(),
+            ...(includePlayers ? { players: getOnlinePlayersList() } : {}),
+          })
+        );
+      }
+      return;
+    }
+
+    // LIVE ADMIN SPECTATE: On-demand 2D map radar stream from a single target player!
+    if (parsed.type === 'admin_spectate') {
+      if (!isValidAdminSecret(parsed.secret)) return;
+      if (!parsed.targetId) {
+        stopSpectating(ws);
+        return;
+      }
+      const ok = startSpectating(ws, parsed.targetId);
+      if (ws.readyState === 1) {
+        const targetWs = idToClient.get(String(parsed.targetId));
+        const tst = targetWs ? clientState.get(targetWs) : null;
+        ws.send(JSON.stringify({ type: 'admin_ack', action: 'spectate', ok, targetId: parsed.targetId, targetName: tst?.name || '' }));
+      }
+      return;
+    }
+
+    // Target player relays compact 2D match frame ONLY to admins actively spectating them!
+    if (parsed.type === 'spectate_frame' && parsed.frame) {
+      const st = clientState.get(ws);
+      if (!st?.id) return;
+      const watchers = targetSpectators.get(st.id);
+      if (!watchers || watchers.size === 0) {
+        if (ws.readyState === 1) {
+          try { ws.send(JSON.stringify({ type: 'spectate_ctl', active: false })); } catch {}
+        }
+        return;
+      }
+      const out = JSON.stringify({ type: 'admin_spectate_frame', targetId: st.id, targetName: st.name, frame: parsed.frame });
+      for (const adminWs of watchers) {
+        if (adminWs.readyState === 1 && adminWs.bufferedAmount < 32768) {
+          try { adminWs.send(out); } catch {}
+        }
+      }
+      return;
+    }
+
+    // LIVE ADMIN ABUSE: Give Coins and/or Packs to ONE SPECIFIC ONLINE PLAYER!
+    if (parsed.type === 'admin_gift_player') {
+      if (!isValidAdminSecret(parsed.secret)) return;
+      const targetId = String(parsed.targetId || '').trim();
+      const targetWs = idToClient.get(targetId);
+      const tst = targetWs ? clientState.get(targetWs) : null;
+      const coins = Math.max(0, Math.min(100000, Math.floor(Number(parsed.coins) || 0)));
+      const allowedPacks = ['xmas_pack', 'slime_pack', 'super_pack', 'neon_pack', 'legendary_pack'];
+      const packId = allowedPacks.includes(parsed.packId) ? parsed.packId : '';
+      const packCount = packId ? Math.max(1, Math.min(20, Math.floor(Number(parsed.packCount) || 1))) : 0;
+      if (!coins && !packCount) return;
+      const reason = sanitizeAdminText(parsed.reason || '', 80);
+      const sender = sanitizeLbName(parsed.sender || 'ADMIN');
+      if (targetWs && targetWs.readyState === 1) {
+        const id = `pgift_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        try {
+          targetWs.send(
+            JSON.stringify({
+              type: 'admin_personal_gift',
+              id,
+              coins,
+              packId,
+              packCount,
+              reason,
+              sender,
+              ts: Date.now(),
+            })
+          );
+        } catch {}
+      }
+      if (ws.readyState === 1) {
+        ws.send(
+          JSON.stringify({
+            type: 'admin_ack',
+            action: 'gift_player',
+            ok: Boolean(targetWs && targetWs.readyState === 1),
+            targetId,
+            targetName: tst?.name || 'Player',
+            coins,
+            packId,
+            packCount,
+          })
+        );
       }
       return;
     }

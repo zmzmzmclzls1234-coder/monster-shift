@@ -27,7 +27,7 @@ class CrazyGamesBridge {
     this._pauseCb = null;
   }
 
-  _waitForSdk(timeoutMs = 1500) {
+  _waitForSdk(timeoutMs = 20000) {
     if (window.CrazyGames?.SDK) return Promise.resolve(window.CrazyGames.SDK);
     const scriptEl = document.querySelector('script[src*="crazygames-sdk"]');
     if (!scriptEl) return Promise.resolve(null);
@@ -43,64 +43,85 @@ class CrazyGamesBridge {
       };
       const poll = setInterval(() => {
         if (window.CrazyGames?.SDK) done(window.CrazyGames.SDK);
-      }, 40);
+      }, 60);
       scriptEl.addEventListener('load', () => done(window.CrazyGames?.SDK || null), { once: true });
       scriptEl.addEventListener('error', () => done(null), { once: true });
       const timer = setTimeout(() => done(window.CrazyGames?.SDK || null), timeoutMs);
     });
   }
 
-  init({ onMuteChange, onPauseChange } = {}) {
+  async _activateSdk(cg, onReadyCb) {
+    if (!cg || this.ready) return false;
+    this.sdk = cg;
+    if (typeof cg.init === 'function') {
+      await cg.init();
+    }
+    this.ready = true;
+    this.isCrazyGames = cg.environment !== 'disabled';
+
+    // Respect CrazyGames global mute setting immediately & on change!
+    if (cg.game?.settings) {
+      if (typeof cg.game.settings.muteAudio === 'boolean' && this._audioMuteCb) {
+        this._audioMuteCb(cg.game.settings.muteAudio);
+      }
+      cg.game.addSettingsChangeListener?.((newSettings) => {
+        if (typeof newSettings?.muteAudio === 'boolean' && this._audioMuteCb) {
+          this._audioMuteCb(newSettings.muteAudio);
+        }
+      });
+    }
+
+    // Flush any loading/gameplay lifecycle events queued while SDK was initializing
+    if (this._pendingLoadingStart) {
+      this._pendingLoadingStart = false;
+      this.loadingActive = true;
+      try {
+        cg.game?.loadingStart?.();
+      } catch {}
+      if (this._pendingLoadingStop) {
+        this._pendingLoadingStop = false;
+        this.loadingActive = false;
+        try {
+          cg.game?.loadingStop?.();
+        } catch {}
+      }
+    }
+    if (this._pendingGameplayStart && !this.gameplayActive) {
+      this._pendingGameplayStart = false;
+      this.gameplayActive = true;
+      try {
+        cg.game?.gameplayStart?.();
+      } catch {}
+    }
+    onReadyCb?.(true);
+    return true;
+  }
+
+  init({ onMuteChange, onPauseChange, onReady } = {}) {
     if (onMuteChange) this._audioMuteCb = onMuteChange;
     if (onPauseChange) this._pauseCb = onPauseChange;
     if (this._initPromise) return this._initPromise;
 
     this._initPromise = (async () => {
       try {
-        const cg = await this._waitForSdk(1500);
-        if (!cg) return false;
-        this.sdk = cg;
-        if (typeof cg.init === 'function') {
-          await cg.init();
+        const cg = await this._waitForSdk(20000);
+        if (cg) {
+          return await this._activateSdk(cg, onReady);
         }
-        this.ready = true;
-        this.isCrazyGames = cg.environment !== 'disabled';
-
-        // Respect CrazyGames global mute setting immediately & on change!
-        if (cg.game?.settings) {
-          if (typeof cg.game.settings.muteAudio === 'boolean' && this._audioMuteCb) {
-            this._audioMuteCb(cg.game.settings.muteAudio);
-          }
-          cg.game.addSettingsChangeListener?.((newSettings) => {
-            if (typeof newSettings?.muteAudio === 'boolean' && this._audioMuteCb) {
-              this._audioMuteCb(newSettings.muteAudio);
-            }
-          });
+        // Even on ultra-slow 3G (>20s), keep watching script load so gameplayStart() is NEVER lost!
+        const scriptEl = document.querySelector('script[src*="crazygames-sdk"]');
+        if (scriptEl) {
+          scriptEl.addEventListener(
+            'load',
+            () => {
+              if (window.CrazyGames?.SDK && !this.ready) {
+                this._activateSdk(window.CrazyGames.SDK, onReady).catch(() => {});
+              }
+            },
+            { once: true }
+          );
         }
-
-        // Flush any loading/gameplay lifecycle events queued while SDK was initializing
-        if (this._pendingLoadingStart) {
-          this._pendingLoadingStart = false;
-          this.loadingActive = true;
-          try {
-            cg.game?.loadingStart?.();
-          } catch {}
-          if (this._pendingLoadingStop) {
-            this._pendingLoadingStop = false;
-            this.loadingActive = false;
-            try {
-              cg.game?.loadingStop?.();
-            } catch {}
-          }
-        }
-        if (this._pendingGameplayStart && !this.gameplayActive) {
-          this._pendingGameplayStart = false;
-          this.gameplayActive = true;
-          try {
-            cg.game?.gameplayStart?.();
-          } catch {}
-        }
-        return true;
+        return false;
       } catch {
         this.ready = false;
         this.isCrazyGames = false;
@@ -172,6 +193,30 @@ class CrazyGamesBridge {
       }
     } catch {}
     return null;
+  }
+
+  /** True when CrazyGames Cloud Save (SDK.data) is available. */
+  isCloudSaveAvailable() {
+    return Boolean(this.ready && this.isCrazyGames && this.sdk?.data?.getItem && this.sdk?.data?.setItem);
+  }
+
+  getCloudItem(key) {
+    if (!this.isCloudSaveAvailable()) return null;
+    try {
+      return this.sdk.data.getItem(String(key));
+    } catch {
+      return null;
+    }
+  }
+
+  setCloudItem(key, value) {
+    if (!this.isCloudSaveAvailable()) return false;
+    try {
+      this.sdk.data.setItem(String(key), String(value));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** True when a real CrazyGames rewarded ad can be requested (SDK ready inside the portal). */

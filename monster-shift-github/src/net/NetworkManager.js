@@ -58,7 +58,13 @@ export class NetworkManager {
         this.globalAdminChannel.onmessage = (ev) => this._handleGlobalAdminMsg(ev.data);
       } catch {}
     }
-    setTimeout(() => this._connectWebSocketIfAvailable(), 260);
+    setTimeout(() => this._connectWebSocketIfAvailable(), 180);
+    window.addEventListener('online', () => this._connectWebSocketIfAvailable(true));
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && (!this.ws || this.ws.readyState !== WebSocket.OPEN)) {
+        this._connectWebSocketIfAvailable(false);
+      }
+    });
     this.joinRoom(this.roomCode, this.inParty, false);
 
     // Notify party immediately if tab closes so peers don't wait for heartbeat timeout
@@ -239,6 +245,9 @@ export class NetworkManager {
 
   getRelayServerUrl() {
     try {
+      if (new URLSearchParams(location.search).get('offline') === '1') return '';
+    } catch {}
+    try {
       const saved = localStorage.getItem('monster_shift_ws_url');
       if (saved) return saved;
     } catch {}
@@ -277,10 +286,10 @@ export class NetworkManager {
   }
 
   _scheduleReconnect() {
-    if (this._reconnectTimer || this._reconnectAttempts >= 10) return;
+    if (this._reconnectTimer) return;
     const customUrl = this.getRelayServerUrl();
     if (!customUrl) return;
-    const delay = Math.min(10000, 2200 + this._reconnectAttempts * 1500);
+    const delay = Math.min(8000, 1800 + Math.min(8, this._reconnectAttempts) * 900);
     this._reconnectAttempts += 1;
     this.wsState = 'reconnecting';
     this._emit({ type: 'status', transport: this.transport, wsState: this.wsState, peerCount: this.getRoster().length });
@@ -288,6 +297,28 @@ export class NetworkManager {
       this._reconnectTimer = null;
       this._connectWebSocketIfAvailable(false);
     }, delay);
+  }
+
+  _ensureWsThen(onReadyFn, onOfflineFn, timeoutMs = 3200) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      onReadyFn(this.ws);
+      return;
+    }
+    if (!this.getRelayServerUrl()) {
+      onOfflineFn?.();
+      return;
+    }
+    this._connectWebSocketIfAvailable(true);
+    const start = Date.now();
+    const poll = setInterval(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        clearInterval(poll);
+        onReadyFn(this.ws);
+      } else if (Date.now() - start >= timeoutMs) {
+        clearInterval(poll);
+        onOfflineFn?.();
+      }
+    }, 80);
   }
 
   _connectWebSocketIfAvailable(forceNow = false) {
@@ -657,10 +688,22 @@ export class NetworkManager {
       return true;
     }
 
+    // Resolve refreshed socketId if target player reconnected under the same nickname
+    let resolvedId = targetId;
+    if (resolvedId && Array.isArray(this.onlinePlayers) && this.onlinePlayers.length > 0) {
+      if (!this.onlinePlayers.some((p) => p.id === resolvedId)) {
+        const matchByName =
+          this.onlinePlayers.find((p) => p.name === targetName && p.mode === 'match') ||
+          this.onlinePlayers.find((p) => p.name === targetName);
+        if (matchByName) resolvedId = matchByName.id;
+      }
+    }
+
     const payload = {
       type: 'admin_gift_player',
       secret: 'ezwin',
-      targetId,
+      targetId: resolvedId,
+      targetName,
       coins: c,
       packId,
       packCount: pCount,
@@ -668,7 +711,8 @@ export class NetworkManager {
       sender: cleanSender,
     };
     this._dispatchAdminCommand(payload, 'gift_player', (wasOldServer) => {
-      if (this.socketId && targetId === this.socketId) {
+      const isSelf = !resolvedId || resolvedId === 'local_self' || (this.socketId && resolvedId === this.socketId);
+      if (isSelf) {
         const msg = {
           type: 'admin_personal_gift',
           id: `local_pgift_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -678,9 +722,12 @@ export class NetworkManager {
           reason: cleanReason,
           sender: cleanSender,
         };
+        this.globalAdminChannel?.postMessage(msg);
         this._handleGlobalAdminMsg(msg);
+        this._emit({ type: 'admin_ack', action: 'gift_player', ok: true, targetName, coins: c, packId, packCount: pCount, localOnly: true, oldServer: wasOldServer });
+      } else {
+        this._emit({ type: 'admin_ack', action: 'gift_player', ok: false, targetName, coins: c, packId, packCount: pCount, localOnly: true, oldServer: wasOldServer });
       }
-      this._emit({ type: 'admin_ack', action: 'gift_player', ok: true, targetName, coins: c, packId, packCount: pCount, localOnly: true, oldServer: wasOldServer });
     });
     return true;
   }
@@ -724,6 +771,9 @@ export class NetworkManager {
   _handleGlobalAdminMsg(msg) {
     if (!msg || typeof msg !== 'object') return;
     if (msg.type === 'admin_ack') {
+      if (msg.action === 'gift_player' && this._suppressGiftAckUntil && Date.now() < this._suppressGiftAckUntil) {
+        return;
+      }
       const pending = this._pendingAdminAck.get(msg.action);
       if (pending) {
         clearTimeout(pending);
@@ -770,6 +820,7 @@ export class NetworkManager {
         coins,
         packId,
         packCount,
+        scope: msg.scope || 'personal',
         reason: String(msg.reason || '').slice(0, 80),
         sender: String(msg.sender || 'ADMIN').slice(0, 16),
       });
@@ -785,23 +836,25 @@ export class NetworkManager {
   }
 
   _dispatchAdminCommand(wsPayload, ackAction, localFallbackFn) {
-    const canWs = this.ws && this.ws.readyState === WebSocket.OPEN;
-    if (canWs) {
-      try {
-        this.ws.send(JSON.stringify(wsPayload));
-        // If server is running updated server.js, admin_ack arrives in <300ms; otherwise gracefully run local preview fallback!
-        const prev = this._pendingAdminAck.get(ackAction);
-        if (prev) clearTimeout(prev);
-        const timer = setTimeout(() => {
-          this._pendingAdminAck.delete(ackAction);
-          localFallbackFn(true);
-        }, 750);
-        this._pendingAdminAck.set(ackAction, timer);
-        return 'ws';
-      } catch {}
-    }
-    localFallbackFn(false);
-    return 'local';
+    this._ensureWsThen(
+      (ws) => {
+        try {
+          ws.send(JSON.stringify(wsPayload));
+          const prev = this._pendingAdminAck.get(ackAction);
+          if (prev) clearTimeout(prev);
+          const timer = setTimeout(() => {
+            this._pendingAdminAck.delete(ackAction);
+            localFallbackFn(true);
+          }, 950);
+          this._pendingAdminAck.set(ackAction, timer);
+        } catch {
+          localFallbackFn(false);
+        }
+      },
+      () => localFallbackFn(false),
+      3200
+    );
+    return 'ws';
   }
 
   sendAdminBroadcast(text, sender = 'ADMIN', durationMs = 6500) {
@@ -852,6 +905,103 @@ export class NetworkManager {
       this.globalAdminChannel?.postMessage(msg);
       this._handleGlobalAdminMsg(msg);
       this._emit({ type: 'admin_ack', action: 'grant_coins', amount: amt, reached: 1, localOnly: true, oldServer: wasOldServer });
+    });
+    return true;
+  }
+
+  /**
+   * Give Coins AND/OR Packs to ALL currently online players!
+   * - Coins-only: uses native `admin_grant_coins` broadcast.
+   * - Packs (or Coins + Packs): uses `admin_grant_all`, AND if remote server hasn't been redeployed yet,
+   *   automatically fans out `admin_gift_player` to every live player on the server!
+   */
+  sendAdminGrantAll({ coins = 0, packId = '', packCount = 0, reason = '', sender = 'ADMIN' }) {
+    const c = Math.max(0, Math.min(100000, Math.floor(Number(coins) || 0)));
+    const pCount = packId ? Math.max(1, Math.min(20, Math.floor(Number(packCount) || 1))) : 0;
+    if (!c && !pCount) return false;
+    if (pCount === 0) {
+      return this.sendAdminGrantCoins(c, reason, sender);
+    }
+
+    const cleanReason = String(reason || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 80);
+    const cleanSender = String(sender || 'ADMIN').slice(0, 16);
+    const payload = {
+      type: 'admin_grant_all',
+      secret: 'ezwin',
+      amount: c,
+      packId,
+      packCount: pCount,
+      reason: cleanReason,
+      sender: cleanSender,
+    };
+
+    this._dispatchAdminCommand(payload, 'grant_all', (wasOldServer) => {
+      // If connected to an older Render server that supports `admin_gift_player` + `admin_stats`,
+      // automatically refresh onlinePlayers and fan out the gift to EVERY online player!
+      if (wasOldServer && this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.requestServerStats(true);
+        setTimeout(() => {
+          const players = Array.isArray(this.onlinePlayers) ? this.onlinePlayers : [];
+          if (players.length > 0 && this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this._suppressGiftAckUntil = Date.now() + 2500;
+            const seenIds = new Set();
+            let sentCount = 0;
+            for (const p of players) {
+              if (!p?.id || p.id === 'local_self' || seenIds.has(p.id)) continue;
+              seenIds.add(p.id);
+              try {
+                this.ws.send(
+                  JSON.stringify({
+                    type: 'admin_gift_player',
+                    secret: 'ezwin',
+                    targetId: p.id,
+                    targetName: p.name || 'Player',
+                    coins: c,
+                    packId,
+                    packCount: pCount,
+                    reason: cleanReason,
+                    sender: cleanSender,
+                  })
+                );
+                sentCount += 1;
+              } catch {}
+            }
+            if (sentCount > 0) {
+              this._emit({ type: 'admin_ack', action: 'grant_all', amount: c, packId, packCount: pCount, reached: sentCount });
+              return;
+            }
+          }
+          // Offline / local fallback
+          const localMsg = {
+            type: 'admin_personal_gift',
+            id: `local_gall_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            coins: c,
+            packId,
+            packCount: pCount,
+            scope: 'global',
+            reason: cleanReason,
+            sender: cleanSender,
+          };
+          this.globalAdminChannel?.postMessage(localMsg);
+          this._handleGlobalAdminMsg(localMsg);
+          this._emit({ type: 'admin_ack', action: 'grant_all', amount: c, packId, packCount: pCount, reached: 1, localOnly: true });
+        }, 320);
+        return;
+      }
+
+      const localMsg = {
+        type: 'admin_personal_gift',
+        id: `local_gall_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        coins: c,
+        packId,
+        packCount: pCount,
+        scope: 'global',
+        reason: cleanReason,
+        sender: cleanSender,
+      };
+      this.globalAdminChannel?.postMessage(localMsg);
+      this._handleGlobalAdminMsg(localMsg);
+      this._emit({ type: 'admin_ack', action: 'grant_all', amount: c, packId, packCount: pCount, reached: 1, localOnly: true });
     });
     return true;
   }

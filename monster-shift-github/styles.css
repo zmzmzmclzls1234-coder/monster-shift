@@ -2045,9 +2045,9 @@ html, body {
   box-shadow: 0 4px 0 var(--ink);
 }
 
-/* Enforce Landscape-Only ONLY on touch portrait mobile/tablet devices (never block narrow desktop windows!) */
-@media (orientation: portrait) and (max-width: 920px) and (pointer: coarse) {
-  .rotate-overlay { display: flex; }
+/* Portrait + Landscape BOTH play natively with zero blocking rotate wall! */
+.rotate-overlay {
+  display: none !important;
 }
 
 /* =========================================================
@@ -4924,7 +4924,7 @@ body.tut-spotlight-play #rewards-badge {
 }
 
 .abb-text {
-  font-family: var(--font-display);
+  font-family: var(--font-display), 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
   font-size: clamp(28px, 5.4vw, 62px);
   font-weight: 900;
   line-height: 1.06;
@@ -5022,6 +5022,11 @@ body.tut-spotlight-play #rewards-badge {
 .adm-input:focus {
   border-color: #ffe047;
   box-shadow: 0 0 8px rgba(255, 224, 71, 0.35);
+}
+.adm-input option {
+  background: #0c1a14;
+  color: #eafff4;
+  font-weight: 700;
 }
 .adm-input.amt {
   flex: 0 0 74px;
@@ -5740,4 +5745,503 @@ body.tut-spotlight-play #rewards-badge {
   height: 7px;
   border-radius: 50%;
   display: inline-block;
+}
+
+/* =========================================================
+   LOBBY VISIBLE DAILY GOAL / RETENTION PILL (1-LINE, CENTERED)
+   ========================================================= */
+.lobby-goal-pill {
+  pointer-events: auto;
+  align-self: center;
+  margin-top: 8px;
+  margin-bottom: auto;
+  max-width: min(460px, 88vw);
+  padding: 5px 16px;
+  border-radius: 999px;
+  border: 3px solid var(--ink);
+  background: linear-gradient(180deg, #fffdf6 0%, #fff0c4 100%);
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  box-shadow: 0 4px 0 var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: transform 0.14s ease, filter 0.14s ease;
+}
+.lobby-goal-pill:hover { transform: translateY(-2px); filter: brightness(1.03); }
+.lobby-goal-pill:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
+.lobby-goal-pill.ready {
+  background: linear-gradient(180deg, #ffe95c 0%, #ffad1f 100%);
+  animation: goalPulse 1.55s ease-in-out infinite;
+}
+@keyframes goalPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.035); }
+}
+#lobby-overlay.locker-mode .lobby-goal-pill {
+  display: none !important;
+}
+@media (pointer: coarse), (max-width: 920px), (max-height: 540px) {
+  .lobby-goal-pill {
+    margin-top: 4px;
+    padding: 3.5px 12px;
+    font-size: 10.5px;
+    border-width: 2.5px;
+    box-shadow: 0 3px 0 var(--ink);
+  }
+}
+
+/* =========================================================
+   RESULTS ACCOUNT XP BAR, WIN STREAK & MYTHIC TRIAL BUTTON
+   ========================================================= */
+.results-xp-box {
+  background: linear-gradient(180deg, #f5f9ff, #e7f0ff);
+  border: 2.5px solid var(--ink);
+  border-radius: 13px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  box-shadow: 0 3px 0 var(--ink);
+  text-align: left;
+}
+.results-xp-box.hidden { display: none !important; }
+.xp-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.xp-lvl-tag {
+  font-family: var(--font-display);
+  font-size: 11.5px;
+  font-weight: 800;
+  color: var(--ink);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.xp-next-tag {
+  font-size: 10.5px;
+  font-weight: 900;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.xp-next-tag.streak {
+  color: #e64800;
+}
+.xp-levelup-tag {
+  margin-top: 5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #42e87a, #ffe047);
+  border: 2px solid var(--ink);
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--ink);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trial-mon-btn {
+  width: 100%;
+  margin: 0 auto 8px;
+  padding: 7px 12px;
+  border-radius: 13px;
+  border: 3px solid var(--ink);
+  background: linear-gradient(180deg, #b85cff 0%, #7d26f5 100%);
+  color: #ffffff;
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  font-weight: 800;
+  -webkit-text-stroke: 1.8px var(--ink);
+  paint-order: stroke fill;
+  box-shadow: inset 0 2.5px 0 rgba(255, 255, 255, 0.45), 0 4px 0 var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: transform 0.12s ease;
+}
+.trial-mon-btn:hover { transform: translateY(-1.5px); filter: brightness(1.06); }
+.trial-mon-btn:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
+.trial-mon-btn.claimed { background: linear-gradient(180deg, #52f768, #14bf42); }
+.trial-mon-btn.hidden { display: none !important; }
+
+/* =========================================================
+   POST-AUDIT POLISH: ACTION ORBS, DRAWER CLEANUP, PACK BUTTONS & EVENT PILL
+   ========================================================= */
+
+/* 1. Spacious untruncated Action Orbs (no CH... / ELAST... / TURB...!) & always pinned bottom-right! */
+.hud-actions {
+  margin-left: auto;
+}
+.action-orb {
+  width: 74px;
+  height: 74px;
+}
+.action-orb.action-secondary {
+  width: 64px;
+  height: 64px;
+}
+.action-title {
+  font-size: 11px;
+  letter-spacing: 0;
+  max-width: 96%;
+  padding: 0 2px;
+  overflow: visible;
+  text-overflow: clip;
+}
+.action-key {
+  font-size: 9px;
+  overflow: visible;
+  text-overflow: clip;
+}
+@media (pointer: coarse), (max-width: 920px), (max-height: 540px) {
+  .action-orb.action-primary { width: 66px; height: 66px; }
+  .action-orb.action-secondary { width: 58px; height: 58px; }
+  .action-title { font-size: 10px; }
+}
+
+/* 2. Hide Lobby background chrome smoothly when ANY right-side drawer opens (no sliced buttons!) */
+body.drawer-open #lobby-overlay:not(.locker-mode) .lobby-topbar,
+body.drawer-open #lobby-overlay:not(.locker-mode) .lobby-dock,
+body.drawer-open #lobby-overlay:not(.locker-mode) .lobby-goal-pill {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.14s ease;
+}
+
+/* 3. Unopened 3D Pack buttons in REWARDS stack full-width (zero horizontal clipping!) */
+.rew-pack-btn-row {
+  display: flex !important;
+  flex-direction: column;
+  gap: 6px;
+}
+.rew-pack-btn-row .mini-btn {
+  width: 100%;
+  min-width: 0;
+}
+
+/* 4. Position Live Coin Event Pill at top-right & hide during Drawers / Victory / Results (zero overlap!) */
+.live-event-pill {
+  top: calc(60px + var(--safe-top));
+  right: calc(16px + var(--safe-right));
+  left: auto;
+  transform: none;
+}
+@keyframes liveEvPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.04); }
+}
+body.drawer-open .live-event-pill,
+body.screen-results .live-event-pill,
+body.victory-showing .live-event-pill {
+  display: none !important;
+}
+
+/* 5. Prevent Ranked tile '0 RR' orphan wrap & clean Locker tab outlines */
+.mode-tile-sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.locker-tab-grid .tab-btn {
+  border: 2.5px solid var(--ink);
+  background: #f2f6ff;
+}
+.locker-tab-grid .tab-btn.active {
+  background: linear-gradient(180deg, var(--sunny-top), var(--sunny-bot));
+  color: #ffffff;
+}
+
+/* =========================================================
+   RESULTS 3-MATCH EPIC VAULT BAR & 1-TAP MONSTER PASS PILL
+   ========================================================= */
+.results-match-prog {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 11px;
+  border-radius: 14px;
+  border: 3px solid var(--ink);
+  background: linear-gradient(180deg, #fffdf4, #fff0c2);
+  box-shadow: 0 3px 0 var(--ink);
+  transition: transform 0.14s ease, filter 0.14s ease;
+}
+.results-match-prog.almost {
+  background: linear-gradient(180deg, #fff4a3, #ffd23f);
+  animation: goalPulse 1.5s ease-in-out infinite;
+}
+.results-match-prog.claimable {
+  cursor: pointer;
+  background: linear-gradient(180deg, #ffe95c 0%, #ff8c1a 100%);
+  color: #ffffff;
+  box-shadow: inset 0 2.5px 0 rgba(255, 255, 255, 0.55), 0 4px 0 var(--ink);
+  animation: goalPulse 1.25s ease-in-out infinite;
+}
+.results-match-prog.claimable:hover { transform: translateY(-2px); filter: brightness(1.05); }
+.results-match-prog.claimable:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
+.rmp-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.rmp-title {
+  font-family: var(--font-display);
+  font-size: 11.5px;
+  font-weight: 800;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.results-match-prog.claimable .rmp-title {
+  color: #ffffff;
+  -webkit-text-stroke: 1.8px var(--ink);
+  paint-order: stroke fill;
+  font-size: 12.5px;
+}
+.rmp-pips {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+.rmp-pip {
+  width: 14px;
+  height: 8px;
+  border-radius: 999px;
+  border: 2px solid var(--ink);
+  background: rgba(20, 25, 43, 0.14);
+}
+.rmp-pip.on {
+  background: linear-gradient(180deg, #52f768, #14bf42);
+}
+.results-match-prog.claimable .rmp-pip.on {
+  background: linear-gradient(180deg, #ffffff, #ffe047);
+}
+
+.mpass-quick-btn {
+  width: 100%;
+  margin: 0 auto 8px;
+  padding: 7px 12px;
+  border-radius: 13px;
+  border: 3px solid var(--ink);
+  background: linear-gradient(180deg, #ff7b29 0%, #e63917 100%);
+  color: #ffffff;
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 800;
+  -webkit-text-stroke: 1.8px var(--ink);
+  paint-order: stroke fill;
+  box-shadow: inset 0 2.5px 0 rgba(255, 255, 255, 0.45), 0 4px 0 var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: transform 0.12s ease;
+}
+.mpass-quick-btn:hover { transform: translateY(-1.5px); filter: brightness(1.06); }
+.mpass-quick-btn:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
+.mpass-quick-btn.armed {
+  background: linear-gradient(180deg, #52f768 0%, #14bf42 100%);
+}
+.mpass-quick-btn.hidden { display: none !important; }
+
+/* =========================================================
+   FULL NATIVE MOBILE PORTRAIT SUPPORT (360x640 .. 430x932)
+   Rescues the 78% portrait-locked mobile traffic on CrazyGames!
+   ========================================================= */
+@media (orientation: portrait) and (max-width: 760px) {
+  /* 1. Compact 1-row Lobby Header that fits 360px-430px portrait phones with ZERO overflow */
+  #lobby-overlay {
+    padding: max(8px, env(safe-area-inset-top)) 10px max(12px, env(safe-area-inset-bottom)) 10px !important;
+  }
+  .lobby-topbar {
+    gap: 5px !important;
+    min-height: 38px !important;
+    flex-wrap: nowrap !important;
+  }
+  .brand-cluster,
+  .utility-cluster {
+    gap: 5px !important;
+    min-width: 0;
+  }
+  #lobby-xmas-pill,
+  #lobby-match-prog,
+  #lobby-rank-pill {
+    display: none !important;
+  }
+  .brand-badge {
+    height: 36px !important;
+    padding: 0 10px !important;
+  }
+  .brand-title {
+    font-size: 13px !important;
+    white-space: nowrap;
+  }
+  #lobby-net-pill .net-desktop-txt { display: none !important; }
+  #lobby-net-pill .net-mobile-ping { display: inline-flex !important; align-items: center; gap: 4px; }
+  #lobby-net-pill,
+  .coin-pill,
+  .locker-back-btn {
+    height: 36px !important;
+    padding: 0 8px !important;
+    font-size: 11.5px !important;
+  }
+  .shard-pill {
+    display: none !important;
+  }
+  #lobby-overlay.locker-mode .shard-pill {
+    display: inline-flex !important;
+  }
+  .icon-btn {
+    width: 36px !important;
+    height: 36px !important;
+  }
+  .lobby-goal-pill {
+    max-width: calc(100dvw - 20px) !important;
+    margin-top: 6px !important;
+    padding: 4px 12px !important;
+    font-size: 10.5px !important;
+  }
+
+  /* 2. Thumb-Friendly 2-Row Portrait Lobby Dock: Giant PLAY on top, LOCKER / SHOP / REWARDS below */
+  .lobby-dock {
+    width: calc(100dvw - 20px) !important;
+    max-width: 420px !important;
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+    padding-bottom: max(6px, env(safe-area-inset-bottom)) !important;
+  }
+  .lobby-dock .play-btn-wrap {
+    order: -1;
+    flex: 1 1 100% !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: 54px !important;
+    margin-top: 20px !important;
+  }
+  .lobby-dock #btn-play.btn-play {
+    width: 100% !important;
+    min-width: 0 !important;
+    height: 54px !important;
+    font-size: 20px !important;
+  }
+  .lobby-dock > .dock-btn {
+    flex: 1 1 calc(33.333% - 6px) !important;
+    min-width: 0 !important;
+    height: 46px !important;
+    padding: 0 6px !important;
+    font-size: 13px !important;
+  }
+
+  /* 3. Bottom-Sheet Drawer in Portrait so live 3D Character shines in upper 38% of screen! */
+  .drawer-shell {
+    align-items: flex-end !important;
+    justify-content: center !important;
+    padding: 0 !important;
+  }
+  .drawer-shell.locker-open {
+    padding-top: 0 !important;
+  }
+  .drawer-card,
+  .drawer-shell.locker-open .drawer-card {
+    width: 100dvw !important;
+    max-width: 100dvw !important;
+    height: 62dvh !important;
+    max-height: 64dvh !important;
+    border-radius: 22px 22px 0 0 !important;
+    border-left: none !important;
+    border-right: none !important;
+    border-bottom: none !important;
+    margin: 0 !important;
+  }
+
+  /* 4. Portrait In-Game HUD: Clean top bar & comfortable lower thumb controls */
+  .hud-top {
+    padding: max(8px, env(safe-area-inset-top)) 8px 0 8px !important;
+    gap: 5px !important;
+  }
+  .hud-role-card {
+    min-width: 78px !important;
+    max-width: 108px !important;
+    padding: 4px 7px !important;
+  }
+  .hud-role-label { font-size: 11px !important; }
+  .hud-sub-label {
+    font-size: 8px !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+  }
+  .admin-fab {
+    bottom: 126px !important;
+    left: 10px !important;
+  }
+  .hud-timer-pill {
+    padding: 4px 10px !important;
+    font-size: 15px !important;
+  }
+  .hud-right-cluster { gap: 4px !important; }
+  .hud-alive-card { padding: 4px 7px !important; }
+  .leave-btn { width: 32px !important; height: 32px !important; font-size: 13px !important; }
+
+  .hud-bottom {
+    padding: 0 12px max(16px, env(safe-area-inset-bottom)) 12px !important;
+  }
+  .touch-joystick-zone {
+    width: 112px !important;
+    height: 112px !important;
+  }
+  .action-orb.action-primary { width: 68px !important; height: 68px !important; }
+  .action-orb.action-secondary { width: 58px !important; height: 58px !important; }
+
+  /* 5. Portrait Modals: Results, Mode Roulette & 3-Card Pack Opener fit 390px cleanly */
+  .results-card {
+    width: calc(100dvw - 20px) !important;
+    max-width: 400px !important;
+    padding: 12px 12px !important;
+    max-height: 92dvh !important;
+  }
+  .roulette-card {
+    width: calc(100dvw - 20px) !important;
+    max-width: 400px !important;
+    padding: 16px 12px 14px !important;
+  }
+  .pack-stage {
+    width: calc(100dvw - 14px) !important;
+    gap: 10px !important;
+  }
+  .pack-cards-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    gap: 6px !important;
+    max-width: calc(100dvw - 14px) !important;
+  }
+  .loot-card {
+    height: 202px !important;
+    min-height: 202px !important;
+    padding: 8px 5px !important;
+    border-radius: 14px !important;
+  }
+  .card-orb { width: 38px !important; height: 38px !important; }
+  .card-name { font-size: 11.5px !important; }
+  .card-sub { font-size: 8.5px !important; }
+  .card-equip-link { font-size: 9.5px !important; padding: 4px 6px !important; }
+  .pack-footer-actions {
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+  }
+  .pack-footer-actions .dock-btn {
+    min-width: 132px !important;
+    height: 44px !important;
+    font-size: 14px !important;
+  }
 }

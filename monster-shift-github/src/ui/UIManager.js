@@ -59,6 +59,8 @@ export class UIManager {
     this.rankTextEl = document.getElementById('lobby-rank-text');
     this.matchProgPill = document.getElementById('lobby-match-prog');
     this.matchProgText = document.getElementById('lobby-match-prog-text');
+    this.lobbyGoalPill = document.getElementById('lobby-goal-pill');
+    this.lobbyGoalText = document.getElementById('lobby-goal-text');
     this.netPill = document.getElementById('lobby-net-pill');
     this.netTextEl = document.getElementById('lobby-net-text');
     this.modePartyBtn = document.getElementById('btn-mode-party');
@@ -128,6 +130,7 @@ export class UIManager {
     this.resultsHeadline = document.getElementById('results-headline');
     this.resultsSummary = document.getElementById('results-summary');
     this.resultsStats = document.getElementById('results-stats');
+    this.resultsXpBox = document.getElementById('results-xp-box');
     this.resultsRankBox = document.getElementById('results-rank-box');
     this.resultsMatchProg = document.getElementById('results-match-prog');
 
@@ -286,6 +289,12 @@ export class UIManager {
       this.openDrawer('rewards');
       this.cb.onTutorialAction('open_rewards');
     });
+    this.lobbyGoalPill?.addEventListener('click', () => {
+      this.sound.unlock();
+      this.sound.playClick();
+      this.openDrawer('rewards');
+      this.cb.onTutorialAction('open_rewards');
+    });
 
     document.getElementById('btn-settings').addEventListener('click', () => {
       this.sound.unlock();
@@ -417,16 +426,28 @@ export class UIManager {
     this._autoNextInterval = null;
   }
 
-  _startAutoNextMatch(delayMs = 0) {
+  _startAutoNextMatch(delayMs = 0, summary = null) {
     this._clearAutoNextMatch();
     const againBtn = document.getElementById('btn-results-again');
     if (!againBtn || againBtn.classList.contains('hidden')) return;
     // Do not auto-launch if locked as a non-host party member
     if (this.network.inParty && this.network.getRoster().length > 1 && !this.network.isHost()) return;
+    // Pause auto-launch when 3/3 Vault is ready so player never misses claiming their Epic Pack!
+    if (this.profile.getThreeMatchStatus().ready) return;
+
+    // Prevent infinite AFK tab loops while keeping smooth momentum for active players
+    if (summary) {
+      if ((summary.participation || 0) < 0.08) {
+        this._idleAutoCount = (this._idleAutoCount || 0) + 1;
+      } else {
+        this._idleAutoCount = 0;
+      }
+      if (this._idleAutoCount >= 2) return;
+    }
 
     this._autoNextDelayTimer = setTimeout(() => {
       if (this.resultsLayer.classList.contains('hidden')) return;
-      let left = 7;
+      let left = 5;
       const updateBtn = () => {
         if (!againBtn || this.resultsLayer.classList.contains('hidden')) {
           this._clearAutoNextMatch();
@@ -436,6 +457,15 @@ export class UIManager {
       };
       updateBtn();
       this._autoNextInterval = setInterval(() => {
+        if (this.resultsLayer.classList.contains('hidden')) {
+          this._clearAutoNextMatch();
+          return;
+        }
+        // Hold countdown while tab is hidden or while 3D Pack / Rank-Up modal is open
+        const packOpen = !document.getElementById('pack-overlay')?.classList.contains('hidden');
+        const rankOpen = !document.getElementById('rankup-overlay')?.classList.contains('hidden');
+        if (document.hidden || packOpen || rankOpen) return;
+
         left -= 1;
         if (left <= 0) {
           this._clearAutoNextMatch();
@@ -467,8 +497,13 @@ export class UIManager {
     this.lobbyLayer.classList.toggle('hidden', screen !== 'lobby');
     this.hudLayer.classList.toggle('hidden', screen !== 'match');
     this.resultsLayer.classList.toggle('hidden', screen !== 'results');
+    document.body.classList.toggle('screen-results', screen === 'results');
+    document.body.classList.remove('victory-showing');
     if (screen !== 'lobby') this.closeDrawer(false);
-    if (screen !== 'results') this._clearRankAnim();
+    if (screen !== 'results') {
+      this._clearRankAnim();
+      this._clearAutoNextMatch();
+    }
     if (screen !== 'match') {
       this.dangerVignette.classList.add('hidden');
       this.sirenOverlay?.classList.add('hidden');
@@ -515,6 +550,12 @@ export class UIManager {
     const tm = this.profile.getThreeMatchStatus();
     this.matchProgText.textContent = tm.ready ? 'REWARD 3/3 READY!' : `REWARD ${tm.step}/3`;
     this.matchProgPill.classList.toggle('ready', tm.ready);
+
+    if (this.lobbyGoalPill && this.lobbyGoalText && this.profile.getLobbyGoalSummary) {
+      const goal = this.profile.getLobbyGoalSummary();
+      this.lobbyGoalText.textContent = goal.text;
+      this.lobbyGoalPill.classList.toggle('ready', Boolean(goal.ready));
+    }
 
     const packs = this.profile.getTotalPackCount();
     this.rewardsBadge.classList.toggle('hidden', !this.profile.hasAnyRewardAction());
@@ -706,11 +747,40 @@ export class UIManager {
     this._flushNextAlert();
   }
 
+  _shortOrbTitle(raw = 'ABILITY') {
+    const u = String(raw || 'ABILITY').toUpperCase().trim();
+    const map = {
+      'ELASTIC GRAB': 'GRAB',
+      'TURBO SPRINT': 'SPRINT',
+      'AEGIS SHIELD': 'SHIELD',
+      'RADAR PULSE': 'RADAR',
+      'SMOKE STEALTH': 'STEALTH',
+      'SPRING VAULT': 'VAULT',
+      'FLAME DASH': 'DASH',
+      'BOULDER SLAM': 'SLAM',
+      'VINE TRAP': 'TRAP',
+      'PROP DISGUISE': 'MIMIC',
+      'TOXIC TRAIL': 'TOXIC',
+      'CYCLONE SPIN': 'SPIN',
+      'SHADOW BLINK': 'BLINK',
+      'ICE ZONE': 'FREEZE',
+      'BLIZZARD GIFT': 'FREEZE',
+      'REPAIR PULSE': 'BOOST',
+      'BOOM DECOY': 'DECOY',
+      'CAMO CLOAK': 'CLOAK',
+    };
+    if (map[u]) return map[u];
+    const parts = u.split(/\s+/);
+    const last = parts[parts.length - 1];
+    return last.length <= 7 ? last : u.slice(0, 6);
+  }
+
   openDrawer(name) {
     const isLocker = name === 'locker' || name === 'characters';
     const isShop = name === 'shop';
     const isStagePanel = isLocker || isShop;
     this.activeDrawer = isLocker ? 'locker' : name;
+    document.body.classList.add('drawer-open');
     this.drawerShell.classList.remove('hidden');
     this.drawerShell.classList.toggle('locker-open', isStagePanel);
     this.lobbyLayer.classList.toggle('locker-mode', isStagePanel);
@@ -742,11 +812,19 @@ export class UIManager {
     }
   }
 
+  rerenderActiveDrawer() {
+    if (!this.activeDrawer || this.drawerShell.classList.contains('hidden')) return;
+    if (this.activeDrawer === 'rewards') this._renderRewardsDrawer();
+    else if (this.activeDrawer === 'shop') this._renderShopDrawer();
+    else if (this.activeDrawer === 'locker') this._renderLockerDrawer();
+  }
+
   closeDrawer(notify = true) {
     if (!this.activeDrawer) return;
     this.resetConfirmArmed = false;
     clearTimeout(this.resetConfirmTimer);
     this.activeDrawer = null;
+    document.body.classList.remove('drawer-open');
     this.drawerShell.classList.add('hidden');
     this.drawerShell.classList.remove('locker-open');
     this.lobbyLayer.classList.remove('locker-mode');
@@ -772,7 +850,7 @@ export class UIManager {
         <div class="locker-clean-card ${eq ? 'equipped' : ''} ${isPrev ? 'previewing' : ''} ${owned ? '' : 'locked'}" style="--rar-bar:${rar.color}" data-locker-item="${key}">
           <div class="lcc-top">
             <span class="rar-dot-inline" style="background:${rar.color}">${rar.label}</span>
-            ${eq ? `<span class="lcc-eq-dot">EQUIPPED</span>` : isPrev ? `<span class="lcc-prev-dot">PREVIEWING</span>` : !owned ? `<span class="lcc-lock-dot">LOCKED</span>` : ''}
+            ${eq ? `<span class="lcc-eq-dot">✓ ACTIVE</span>` : isPrev ? `<span class="lcc-prev-dot">PREVIEWING</span>` : !owned ? `<span class="lcc-lock-dot">LOCKED</span>` : ''}
           </div>
           <div class="lcc-name">${name}</div>
           ${badge ? `<span class="item-badge" style="background:#ffe05d">${badge}</span>` : ''}
@@ -1378,7 +1456,77 @@ export class UIManager {
       `);
     }
 
-    // 2. 3-Match Milestone -> READY or IN PROGRESS
+    // 1.5. 4-Hour Free Mystery Crate (Timed Return Hook for D1 & Same-Day Returning Players!)
+    const fc = this.profile.getFreeCrateStatus();
+    const fcRemSec = Math.ceil((fc.remainingMs || 0) / 1000);
+    const fcH = String(Math.floor(fcRemSec / 3600)).padStart(2, '0');
+    const fcM = String(Math.floor((fcRemSec % 3600) / 60)).padStart(2, '0');
+    const fcS = String(fcRemSec % 60).padStart(2, '0');
+    const fcHtml = `
+      <div class="rew-card ${fc.ready ? 'state-ready' : 'state-progress'}">
+        <div class="rew-card-head">
+          <div class="row-title">Free 4-Hour Mystery Crate</div>
+          <span class="rew-status-tag ${fc.ready ? 'ready' : 'progress'}">${fc.ready ? 'READY!' : fc.unlocked ? `${fcH}:${fcM}:${fcS}` : 'PLAY 1'}</span>
+        </div>
+        <div class="row-sub">Free every 4h: <b>+100 Coins + Random Collectible Pack!</b></div>
+        <button id="btn-claim-free-crate" class="mini-btn ${fc.ready ? 'buy-green' : 'muted'}" ${fc.ready ? '' : 'disabled'}>
+          ${fc.ready ? 'OPEN FREE 4H CRATE!' : fc.unlocked ? `NEXT CRATE IN ${fcH}:${fcM}:${fcS}` : 'PLAY 1 MATCH TO UNLOCK'}
+        </button>
+      </div>
+    `;
+    if (fc.ready) readyCards.push(fcHtml);
+    else progressCards.push(fcHtml);
+
+    // 2. Daily Quests (3 Fresh Quests + All-3 Bonus for strong daily & return motivation!)
+    const dq = this.profile.getDailyQuests();
+    for (const q of dq.items) {
+      const qReady = !q.claimed && (q.progress || 0) >= q.target;
+      const qStatus = q.claimed ? 'done' : qReady ? 'ready' : 'progress';
+      const qPct = Math.min(100, Math.round(((q.progress || 0) / q.target) * 100));
+      const prizeTxt = q.packId ? `+${q.coins}c + Free Pack` : `+${q.coins} Coins`;
+      const qHtml = `
+        <div class="rew-card state-${qStatus}">
+          <div class="rew-card-head">
+            <div class="row-title">Daily Quest · ${q.title}</div>
+            <span class="rew-status-tag ${qStatus}">${q.claimed ? '✓ DONE' : qReady ? 'READY!' : `${Math.min(q.progress || 0, q.target)}/${q.target}`}</span>
+          </div>
+          <div class="rew-mile-body">
+            <div class="row-info" style="flex:1;min-width:0">
+              <div class="row-sub">Reward: <b>${prizeTxt}</b> (${qPct}%)</div>
+              <div class="progress-track"><div class="progress-fill ${qReady ? 'ready-fill' : q.claimed ? 'done-fill' : ''}" style="width:${qPct}%"></div></div>
+            </div>
+            <button class="mini-btn ${qReady ? 'buy-green' : 'muted'} rew-action-btn" data-claim-quest="${q.id}" ${qReady ? '' : 'disabled'}>
+              ${q.claimed ? '✓ DONE' : qReady ? 'CLAIM!' : `${q.target - Math.min(q.progress || 0, q.target)} LEFT`}
+            </button>
+          </div>
+        </div>
+      `;
+      if (qStatus === 'ready') readyCards.push(qHtml);
+      else if (qStatus === 'progress') progressCards.push(qHtml);
+      else doneCards.push(qHtml);
+    }
+    if (dq.bonusReady || !dq.bonusClaimed) {
+      const doneCnt = dq.items.filter((q) => q.claimed).length;
+      const bStatus = dq.bonusClaimed ? 'done' : dq.bonusReady ? 'ready' : 'progress';
+      const bPct = Math.round((doneCnt / 3) * 100);
+      const bonusHtml = `
+        <div class="rew-card state-${bStatus}">
+          <div class="rew-card-head">
+            <div class="row-title">Daily Bonus · Complete All 3 Quests</div>
+            <span class="rew-status-tag ${bStatus}">${dq.bonusReady ? 'READY!' : `${doneCnt}/3`}</span>
+          </div>
+          <div class="row-sub">Grand Prize: <b>+250 Coins + Neon Pack!</b></div>
+          <div class="progress-track"><div class="progress-fill ${dq.bonusReady ? 'ready-fill' : ''}" style="width:${bPct}%"></div></div>
+          <button id="btn-claim-dq-bonus" class="mini-btn ${dq.bonusReady ? 'buy-green' : 'muted'}" ${dq.bonusReady ? '' : 'disabled'}>
+            ${dq.bonusReady ? 'CLAIM +250c + NEON PACK!' : `${3 - doneCnt} QUEST${3 - doneCnt === 1 ? '' : 'S'} LEFT`}
+          </button>
+        </div>
+      `;
+      if (dq.bonusReady) readyCards.push(bonusHtml);
+      else progressCards.push(bonusHtml);
+    }
+
+    // 3. 3-Match Milestone -> READY or IN PROGRESS
     const tmPct = Math.round((tm.step / 3) * 100);
     const tmHtml = `
       <div class="rew-card ${tm.ready ? 'state-ready' : 'state-progress'}">
@@ -1403,16 +1551,19 @@ export class UIManager {
       const isToday = i === idx && canDaily;
       return `<div class="daily-pip ${done ? 'done' : isToday ? 'today' : ''}">D${d.day}</div>`;
     }).join('');
+    const tmrSpec = this.profile.getTomorrowDailySpec();
+    const claimedSpec = this.profile.getTodayClaimedDailySpec?.() || dailySpec;
+    const shownLoginSpec = canDaily ? dailySpec : claimedSpec;
     const dailyHtml = `
       <div class="rew-card ${canDaily ? 'state-ready' : 'state-done'}">
         <div class="rew-card-head">
-          <div class="row-title">Daily Login (${dailySpec.label})</div>
+          <div class="row-title">Daily Login (${shownLoginSpec.label})</div>
           <span class="rew-status-tag ${canDaily ? 'ready' : 'done'}">${canDaily ? 'READY!' : 'CLAIMED'}</span>
         </div>
-        <div class="row-sub">Today: <b>${dailySpec.desc}</b></div>
+        <div class="row-sub">${canDaily ? `Today: <b>${dailySpec.desc}</b>` : `Come back tomorrow (${tmrSpec.label}): <b>${tmrSpec.desc}</b>`}</div>
         <div class="daily-strip">${dailyStrip}</div>
         <button id="btn-claim-daily" class="mini-btn ${canDaily ? 'buy-green' : 'muted'}" ${canDaily ? '' : 'disabled'}>
-          ${canDaily ? `CLAIM ${dailySpec.label.toUpperCase()}!` : '✓ CLAIMED TODAY'}
+          ${canDaily ? `CLAIM ${dailySpec.label.toUpperCase()}!` : `TOMORROW: ${tmrSpec.label.toUpperCase()}`}
         </button>
       </div>
     `;
@@ -1492,13 +1643,21 @@ export class UIManager {
         this.cb.onOpenPack(btn.dataset.openPack, { guaranteedNewMonster: isTutPack });
       });
     });
+    document.getElementById('btn-claim-free-crate')?.addEventListener('click', () => {
+      const res = this.profile.claimFreeCrate();
+      if (res) {
+        this.sound.playVictory();
+        crazyGames.happytime();
+        if (res.packId) this.cb.onOpenPack(res.packId);
+      }
+    });
     document.getElementById('btn-claim-3match')?.addEventListener('click', () => {
       const res = this.profile.claimThreeMatchReward();
       if (res) {
         this.sound.playVictory();
         crazyGames.happytime();
         this.cb.onTutorialAction('claim_reward');
-        if (res.packId) this.cb.onOpenPack(res.packId);
+        if (res.packId) this.cb.onOpenPack(res.packId, { guaranteedNewMonster: Boolean(res.guaranteedNewMonster) });
       }
     });
     document.getElementById('btn-claim-daily')?.addEventListener('click', () => {
@@ -1506,6 +1665,25 @@ export class UIManager {
       if (res) {
         this.sound.playVictory();
         this.cb.onTutorialAction('claim_reward');
+        if (res.packId) this.cb.onOpenPack(res.packId);
+      }
+    });
+    this.drawerBody.querySelectorAll('[data-claim-quest]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const res = this.profile.claimDailyQuest(btn.dataset.claimQuest);
+        if (res) {
+          this.sound.playVictory();
+          crazyGames.happytime();
+          this.cb.onTutorialAction('claim_reward');
+          if (res.packId) this.cb.onOpenPack(res.packId);
+        }
+      });
+    });
+    document.getElementById('btn-claim-dq-bonus')?.addEventListener('click', () => {
+      const res = this.profile.claimDailyQuestBonus();
+      if (res) {
+        this.sound.playVictory();
+        crazyGames.happytime();
         if (res.packId) this.cb.onOpenPack(res.packId);
       }
     });
@@ -2085,7 +2263,7 @@ export class UIManager {
         ? 'linear-gradient(90deg, #ff591a, #ffcf24)'
         : 'linear-gradient(90deg, #27c759, #7ef266)';
 
-      this.primaryLabel.textContent = msg.abilityName.toUpperCase();
+      this.primaryLabel.textContent = this._shortOrbTitle(msg.abilityName);
       this.primaryHint.textContent = `SPACE: ${msg.abilityName}`;
       this.secondaryLabel.textContent = isMonster ? 'CHOMP' : 'FIRE';
       this.secondaryHint.textContent = isMonster ? 'CLICK: Chomp' : 'CLICK: Fire';
@@ -2160,7 +2338,7 @@ export class UIManager {
       this.hudGrowthLabel.textContent = 'INFECTED SLIME · HUNT!';
       this.hudHealthFill.style.width = '40%';
       this.hudHealthFill.style.background = 'linear-gradient(90deg, #9b2cff, #ff3d6e)';
-      this.primaryLabel.textContent = (msg.abilityName || 'ABILITY').toUpperCase();
+      this.primaryLabel.textContent = this._shortOrbTitle(msg.abilityName || 'ABILITY');
       this.primaryHint.textContent = `SPACE: ${msg.abilityName || 'Ability'}`;
       this.secondaryLabel.textContent = 'CHOMP';
       this.secondaryHint.textContent = 'CLICK: Chomp';
@@ -2193,7 +2371,7 @@ export class UIManager {
       this.hudGrowthLabel.textContent = 'SURVIVOR · REVIVED!';
       this.hudHealthFill.style.width = '100%';
       this.hudHealthFill.style.background = 'linear-gradient(90deg, #25a8ff, #8cf2ff)';
-      this.primaryLabel.textContent = (msg.abilityName || 'ABILITY').toUpperCase();
+      this.primaryLabel.textContent = this._shortOrbTitle(msg.abilityName || 'ABILITY');
       this.primaryHint.textContent = `SPACE: ${msg.abilityName || 'Ability'}`;
       this.secondaryLabel.textContent = 'FIRE';
       this.secondaryHint.textContent = 'CLICK: Fire';
@@ -2225,6 +2403,7 @@ export class UIManager {
     } else if (msg.type === 'monsterCombo') {
       this._showMonsterComboFx(msg.count, msg.title, msg.sub);
     } else if (msg.type === 'matchEnding') {
+      document.body.classList.add('victory-showing');
       clearTimeout(this.alertTimer);
       clearTimeout(this.toastTimer);
       this.hudAlertQueue = [];
@@ -2436,6 +2615,48 @@ export class UIManager {
     });
   }
 
+  _setupMythicTrialButton(summary) {
+    let btn = document.getElementById('btn-results-trial');
+    if (!btn) return;
+    const fresh = btn.cloneNode(false);
+    btn.replaceWith(fresh);
+    btn = fresh;
+
+    const lockedTut = !this.profile.state.tutorialDone && this.profile.state.tutorialStage === 1;
+    const inLockedParty = this.network.inParty && this.network.getRoster().length > 1 && !this.network.isHost();
+    if (lockedTut || inLockedParty || this.profile.state.playMode === 'ranked' || this.profile.state.trialMonsterId) {
+      btn.classList.add('hidden');
+      return;
+    }
+
+    const cand = this.profile.getTrialCandidateMonster();
+    btn.classList.remove('hidden', 'claimed');
+    btn.disabled = false;
+    btn.innerHTML = `⚡ TRY ${cand.name.toUpperCase()} FREE NEXT MATCH · WATCH AD`;
+    btn.addEventListener('click', async () => {
+      if (btn.disabled) return;
+      this._clearAutoNextMatch();
+      btn.disabled = true;
+      this.sound.playClick();
+      btn.textContent = 'LOADING AD...';
+      let res;
+      try {
+        res = await this.cb.onActivateMythicTrial?.(cand.id);
+      } catch {
+        res = { ok: false, reason: 'ad_error' };
+      }
+      if (res?.ok) {
+        btn.classList.add('claimed');
+        btn.textContent = `✓ ${cand.name.toUpperCase()} READY! LAUNCHING...`;
+        this.sound.playVictory();
+        setTimeout(() => this.cb.onStartMatch?.(), 350);
+      } else {
+        btn.disabled = false;
+        btn.textContent = res?.reason === 'cooldown' ? `COOLDOWN ${res.waitSec}s · TRY AGAIN` : `⚡ TRY ${cand.name.toUpperCase()} FREE · WATCH AD`;
+      }
+    });
+  }
+
   showResults(summary) {
     this.setScreen('results');
     const tm = this.profile.getThreeMatchStatus();
@@ -2479,10 +2700,36 @@ export class UIManager {
         : 'Weapon Hits';
 
     this.resultsStats.innerHTML = `
-      <div class="stat-box"><div class="stat-val">+${summary.coinsEarned}</div><div class="stat-lbl">${summary.eventMultiplier > 1 ? `Coins (${summary.eventMultiplier}X EVENT!)` : 'Coins'}</div></div>
+      <div class="stat-box"><div class="stat-val">+${summary.coinsEarned}</div><div class="stat-lbl">${summary.eventMultiplier > 1 ? `Coins (${summary.eventMultiplier}X)` : summary.streakBonusPct > 0 ? `Coins (+${summary.streakBonusPct}% 🔥)` : 'Coins'}</div></div>
       <div class="stat-box"><div class="stat-val">${midStatVal}</div><div class="stat-lbl">${midStatLbl}</div></div>
       <div class="stat-box"><div class="stat-val">${formatTime(summary.elapsedSec)}</div><div class="stat-lbl">Time</div></div>
     `;
+
+    // Account XP, Level-Up Unlock & Win Streak Momentum Card!
+    if (this.resultsXpBox) {
+      const prog = summary.progression;
+      const lv = prog?.levelInfo || this.profile.getLevelInfo();
+      const st = prog?.streak || this.profile.getStreakInfo();
+      const rightTag =
+        st.winStreak >= 2
+          ? `🔥 ${st.winStreak}-WIN STREAK (+${st.bonusPct}%c)`
+          : `NEXT: ${lv.nextRewardLabel}`;
+      this.resultsXpBox.classList.remove('hidden');
+      this.resultsXpBox.innerHTML = `
+        <div class="xp-top-row">
+          <span class="xp-lvl-tag">LVL ${lv.level} · +${prog?.xpGained || 65} XP</span>
+          <span class="xp-next-tag ${st.winStreak >= 2 ? 'streak' : ''}">${rightTag}</span>
+        </div>
+        <div class="progress-track" style="margin-top:4px;height:9px">
+          <div class="progress-fill ready-fill" style="width:${lv.pct}%"></div>
+        </div>
+        ${prog?.leveledUp ? `<div class="xp-levelup-tag">🎉 LEVEL ${prog.newLevel} UNLOCKED: ${prog.unlockedRewards[0]?.label || 'REWARD'}!</div>` : ''}
+      `;
+      if (prog?.leveledUp) {
+        this.sound.playRankUp();
+        crazyGames.happytime();
+      }
+    }
 
     // Ranked RR Result Card:
     // 1) Shows original RR + small green "+delta" (or red "-delta") beside it for 3.0 seconds
@@ -2624,15 +2871,11 @@ export class UIManager {
       }
     }
 
+    this._lastResultsSummary = summary;
     this._setupDoubleCoinsButton(summary);
-
-    this.resultsMatchProg.textContent = summary.tutorialBanner
-      ? summary.tutorialBanner
-      : tm.ready
-      ? `3/3 READY · Claim "${tm.tierSpec.title}" in REWARDS!`
-      : tm.step === 2
-      ? `1 MORE MATCH FOR FREE PACK + ${tm.tierSpec.coins}c!`
-      : `3-Match Reward ${tm.step}/3 · ${tm.tierSpec.title}`;
+    this._setupMythicTrialButton(summary);
+    this._renderResultsThreeMatchVault(summary);
+    this._setupResultsMonsterTicketButton(summary);
 
     const lobbyBtn = document.getElementById('btn-results-lobby');
     const againBtn = document.getElementById('btn-results-again');
@@ -2646,11 +2889,130 @@ export class UIManager {
         lobbyBtn.className = 'dock-btn btn-sky';
         againBtn.textContent = 'PLAY AGAIN';
         againBtn.classList.remove('hidden');
-        // Smooth auto-rematch loop (starts after RR animation completes on Ranked, or immediately on Casual)
-        const waitMs = summary.rankUpdate ? (summary.rankUpdate.promoted ? 6600 : 4800) : 600;
-        this._startAutoNextMatch(waitMs);
+        // Smooth auto-rematch loop (gives reading pause first; holds automatically if 3/3 Vault is claimable!)
+        const waitMs = summary.rankUpdate ? (summary.rankUpdate.promoted ? 6600 : 4800) : 2200;
+        this._startAutoNextMatch(waitMs, summary);
       }
     }
+  }
+
+  refreshResultsHooks() {
+    if (this.resultsLayer.classList.contains('hidden')) return;
+    const summary = this._lastResultsSummary || {};
+    this._renderResultsThreeMatchVault(summary);
+    this._setupResultsMonsterTicketButton(summary);
+    const againBtn = document.getElementById('btn-results-again');
+    if (againBtn && !againBtn.classList.contains('hidden') && !this.profile.getThreeMatchStatus().ready) {
+      this._startAutoNextMatch(2200, summary);
+    }
+  }
+
+  _renderResultsThreeMatchVault(summary) {
+    const el = this.resultsMatchProg;
+    if (!el) return;
+    const tm = this.profile.getThreeMatchStatus();
+    el.onclick = null;
+    el.classList.remove('almost', 'claimable');
+
+    if (summary?.tutorialBanner && !tm.ready) {
+      el.innerHTML = `<div class="rmp-row"><span class="rmp-title">${summary.tutorialBanner}</span></div>`;
+      return;
+    }
+
+    const filled = tm.ready ? 3 : tm.step;
+    const pipsHtml = [0, 1, 2]
+      .map((i) => `<span class="rmp-pip ${i < filled ? 'on' : ''}"></span>`)
+      .join('');
+    const packShort =
+      tm.tierSpec.packId === 'legendary_pack'
+        ? 'MYTHIC PACK'
+        : tm.tierSpec.packId === 'neon_pack'
+        ? 'NEON PACK'
+        : tm.tierSpec.guaranteedNewMonster
+        ? 'SUPER MONSTER PACK'
+        : 'SUPER PACK';
+
+    if (tm.ready) {
+      el.classList.add('claimable');
+      el.innerHTML = `
+        <div class="rmp-row">
+          <span class="rmp-title">🎉 3/3! TAP TO RIP ${packShort} +${tm.tierSpec.coins}c</span>
+          <span class="rmp-pips">${pipsHtml}</span>
+        </div>
+      `;
+      el.onclick = () => {
+        this._clearAutoNextMatch();
+        const res = this.profile.claimThreeMatchReward();
+        if (!res) return;
+        this.sound.playVictory();
+        crazyGames.happytime();
+        this.refreshLobbyChrome();
+        this._renderResultsThreeMatchVault(summary);
+        this._setupResultsMonsterTicketButton(summary);
+        if (res.packId) {
+          this.cb.onOpenPack(res.packId, { guaranteedNewMonster: Boolean(res.guaranteedNewMonster) });
+        }
+      };
+    } else if (tm.step === 2) {
+      el.classList.add('almost');
+      el.innerHTML = `
+        <div class="rmp-row">
+          <span class="rmp-title">🔥 1 MORE → FREE ${packShort} +${tm.tierSpec.coins}c!</span>
+          <span class="rmp-pips">${pipsHtml}</span>
+        </div>
+      `;
+    } else {
+      el.innerHTML = `
+        <div class="rmp-row">
+          <span class="rmp-title">🎁 ${tm.step}/3 · FREE ${packShort} +${tm.tierSpec.coins}c</span>
+          <span class="rmp-pips">${pipsHtml}</span>
+        </div>
+      `;
+    }
+  }
+
+  _setupResultsMonsterTicketButton(summary) {
+    let btn = document.getElementById('btn-results-mpass');
+    if (!btn) return;
+    const fresh = btn.cloneNode(false);
+    btn.replaceWith(fresh);
+    btn = fresh;
+
+    const inTutStage1 = !this.profile.state.tutorialDone && this.profile.state.tutorialStage === 1;
+    const isRanked = (summary?.playMode || this.profile.state.playMode) === 'ranked';
+    const tickets = this.profile.state.monsterTickets || 0;
+    const armed = this.profile.hasMonsterPass();
+    const trialBtn = document.getElementById('btn-results-trial');
+
+    if (inTutStage1 || isRanked || (!armed && tickets <= 0)) {
+      btn.classList.add('hidden');
+      return;
+    }
+
+    // Keep Results card sleek & uncluttered: show Free Ticket button while tickets > 0, then Mythic Ad Trial once tickets = 0!
+    trialBtn?.classList.add('hidden');
+    btn.classList.remove('hidden');
+    if (armed) {
+      btn.classList.add('armed');
+      btn.disabled = true;
+      btn.textContent = '✓ GUARANTEED MONSTER NEXT MATCH!';
+      return;
+    }
+
+    btn.classList.remove('armed');
+    btn.disabled = false;
+    btn.textContent = `👹 BE MONSTER NEXT! (FREE TICKET · ${tickets} LEFT)`;
+    btn.addEventListener('click', async () => {
+      if (btn.disabled) return;
+      const res = await this.cb.onActivateMonsterPass?.('ticket');
+      if (res?.ok) {
+        this.sound.playCoin();
+        btn.classList.add('armed');
+        btn.disabled = true;
+        btn.textContent = '✓ GUARANTEED MONSTER NEXT MATCH!';
+        this.refreshLobbyChrome();
+      }
+    });
   }
 
   cancelModeRoulette() {
@@ -2736,8 +3098,8 @@ export class UIManager {
     const endX = -(targetIdx * step + tileW / 2);
     this.rouletteStrip.style.transform = `translate3d(${startX}px, 0, 0)`;
 
-    const spinMs = 1120;
-    const holdMs = 480;
+    const spinMs = 820;
+    const holdMs = 340;
     const t0 = performance.now();
     let lastTickIdx = startIdx;
 

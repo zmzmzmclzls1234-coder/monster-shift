@@ -100,6 +100,21 @@ export class TutorialSpotlight {
     this._startTrackLoop();
   }
 
+  startInMatchControls() {
+    if (this.profile.state.tutorialDone) return;
+    this.mode = 'tutorial';
+    this.steps = [
+      { id: 'move', selector: '#touch-joystick-zone, #hud-controls-hint', text: 'MOVE! WASD / STICK', pad: 10, allowCanvas: true },
+      { id: 'attack', selector: '#btn-secondary-action', text: 'CHOMP! CLICK / TAP', pad: 10, allowCanvas: true },
+      { id: 'ability', selector: '#btn-primary-action', text: 'ABILITY! [SPACE]', pad: 10, allowCanvas: true },
+    ];
+    this.active = true;
+    this.stepIndex = 0;
+    this.root.classList.remove('hidden');
+    this._applyStep();
+    this._startTrackLoop();
+  }
+
   start() {
     this.startStage(this.profile.state.tutorialStage || 0);
   }

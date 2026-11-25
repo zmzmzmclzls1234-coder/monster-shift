@@ -70,6 +70,23 @@ export class SceneManager {
 
     this._onResize = this._handleResize.bind(this);
     window.addEventListener('resize', this._onResize);
+
+    // Protect main #game-canvas against OS/GPU WebGL context resets and auto-recover cleanly
+    canvas.addEventListener(
+      'webglcontextlost',
+      (e) => {
+        e.preventDefault();
+      },
+      false
+    );
+    canvas.addEventListener(
+      'webglcontextrestored',
+      () => {
+        this._handleResize();
+        this.renderer.shadowMap.needsUpdate = true;
+      },
+      false
+    );
   }
 
   _maxDpr() {

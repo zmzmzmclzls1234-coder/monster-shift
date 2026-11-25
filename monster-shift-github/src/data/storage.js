@@ -99,6 +99,21 @@ const DEFAULT_STATE = {
   monsterPassSource: '',
   lastNewMonsterId: '',
 
+  // Account Level & Win Streak Momentum (Drives 10+ min sessions & D1 Return!)
+  xp: 0,
+  level: 1,
+  winStreak: 0,
+  bestWinStreak: 0,
+  nextFreeCrateAt: 0,
+  trialMonsterId: '',
+
+  // 3 Daily Quests (refresh every calendar day for D1 Retention & short-session goals!)
+  dailyQuests: {
+    date: '',
+    items: [],
+    bonusClaimed: false,
+  },
+
   // Secret Developer/Admin Mode (unlocked via 'ezwin' code in Settings)
   admin: {
     unlocked: false,
@@ -119,10 +134,174 @@ function todayKey() {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }
 
+function buildDailyQuestsForDate(dateStr) {
+  return {
+    date: dateStr,
+    bonusClaimed: false,
+    items: [
+      { id: 'q_play', title: 'Play 3 Matches', target: 3, progress: 0, coins: 150, packId: null, claimed: false },
+      { id: 'q_loot', title: 'Grab 10 Coins / Power-Ups', target: 10, progress: 0, coins: 120, packId: 'slime_pack', claimed: false },
+      { id: 'q_action', title: 'Win 1 Match or 3 Hits/KOs', target: 3, progress: 0, coins: 200, packId: 'super_pack', claimed: false },
+    ],
+  };
+}
+
+const LEVEL_REWARDS = [
+  { level: 2, xpReq: 100, label: 'SLIME PACK + 150c', coins: 150, packId: 'slime_pack' },
+  { level: 3, xpReq: 240, label: 'UNLOCK BURNY + 100c', coins: 100, unlock: { category: 'monster', id: 'burny' } },
+  { level: 4, xpReq: 420, label: 'SUPER PACK + 200c', coins: 200, packId: 'super_pack' },
+  { level: 5, xpReq: 640, label: 'FROST BLASTER + NEON PACK', coins: 150, packId: 'neon_pack', unlock: { category: 'weapon', id: 'frostgun' } },
+  { level: 6, xpReq: 900, label: 'MYTHIC PACK + 300c', coins: 300, packId: 'legendary_pack' },
+];
+
+function getLevelThreshold(lvl) {
+  if (lvl <= 1) return 0;
+  const fixed = LEVEL_REWARDS.find((r) => r.level === lvl);
+  if (fixed) return fixed.xpReq;
+  return 900 + (lvl - 6) * 300;
+}
+
+function getLevelRewardSpec(lvl) {
+  const fixed = LEVEL_REWARDS.find((r) => r.level === lvl);
+  if (fixed) return fixed;
+  const packs = ['super_pack', 'neon_pack', 'legendary_pack'];
+  const pId = packs[(lvl - 7) % packs.length];
+  const pName = pId === 'legendary_pack' ? 'MYTHIC PACK' : pId === 'neon_pack' ? 'NEON PACK' : 'SUPER PACK';
+  return { level: lvl, xpReq: getLevelThreshold(lvl), label: `${pName} + 250c`, coins: 250, packId: pId };
+}
+
 export class ProfileStore {
   constructor() {
     this.state = this._load();
+    this._ensureDailyQuests();
     this.listeners = new Set();
+    this._cloudWriter = null;
+    this._cloudTimer = null;
+  }
+
+  setCloudWriter(fn) {
+    this._cloudWriter = typeof fn === 'function' ? fn : null;
+  }
+
+  _ensureDailyQuests() {
+    const tk = todayKey();
+    const dq = this.state.dailyQuests;
+    if (!dq || dq.date !== tk || !Array.isArray(dq.items) || dq.items.length < 3) {
+      this.state.dailyQuests = buildDailyQuestsForDate(tk);
+    }
+  }
+
+  exportCloudPayload() {
+    try {
+      const s = this.state;
+      return JSON.stringify({
+        v: 1,
+        playerId: s.playerId,
+        playerName: s.playerName,
+        coins: s.coins,
+        shards: s.shards,
+        xp: s.xp || 0,
+        level: s.level || 1,
+        winStreak: s.winStreak || 0,
+        bestWinStreak: s.bestWinStreak || 0,
+        nextFreeCrateAt: s.nextFreeCrateAt || 0,
+        matchesCompleted: s.matchesCompleted,
+        threeMatchClaims: s.threeMatchClaims,
+        dailyStreak: s.dailyStreak,
+        lastDailyDate: s.lastDailyDate,
+        dailyQuests: s.dailyQuests,
+        tutorialDone: s.tutorialDone,
+        tutorialStage: s.tutorialStage,
+        introSeen: s.introSeen,
+        playMode: s.playMode,
+        ranked: s.ranked,
+        equippedMonster: s.equippedMonster,
+        equippedSurvivor: s.equippedSurvivor,
+        equippedWeapon: s.equippedWeapon,
+        equippedSkin: s.equippedSkin,
+        equippedAura: s.equippedAura,
+        equippedHat: s.equippedHat,
+        equippedTrail: s.equippedTrail,
+        unlockedMonsters: s.unlockedMonsters,
+        unlockedSurvivors: s.unlockedSurvivors,
+        unlockedWeapons: s.unlockedWeapons,
+        unlockedSkins: s.unlockedSkins,
+        unlockedAuras: s.unlockedAuras,
+        unlockedHats: s.unlockedHats,
+        unlockedTrails: s.unlockedTrails,
+        packs: s.packs,
+        claimedMilestones: s.claimedMilestones,
+        stats: s.stats,
+        monsterTickets: s.monsterTickets,
+      });
+    } catch {
+      return '';
+    }
+  }
+
+  mergeCloudSave(rawJson) {
+    if (!rawJson || typeof rawJson !== 'string') return false;
+    try {
+      const cloud = JSON.parse(rawJson);
+      if (!cloud || typeof cloud !== 'object') return false;
+      const s = this.state;
+      const union = (a, b) => [...new Set([...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])])];
+
+      s.coins = Math.max(s.coins || 0, Number(cloud.coins) || 0);
+      s.shards = Math.max(s.shards || 0, Number(cloud.shards) || 0);
+      s.xp = Math.max(s.xp || 0, Number(cloud.xp) || 0);
+      s.level = Math.max(s.level || 1, Number(cloud.level) || 1);
+      s.winStreak = Math.max(s.winStreak || 0, Number(cloud.winStreak) || 0);
+      s.bestWinStreak = Math.max(s.bestWinStreak || 0, Number(cloud.bestWinStreak) || 0);
+      s.nextFreeCrateAt = Math.max(s.nextFreeCrateAt || 0, Number(cloud.nextFreeCrateAt) || 0);
+      s.matchesCompleted = Math.max(s.matchesCompleted || 0, Number(cloud.matchesCompleted) || 0);
+      s.threeMatchClaims = Math.max(s.threeMatchClaims || 0, Number(cloud.threeMatchClaims) || 0);
+      s.dailyStreak = Math.max(s.dailyStreak || 0, Number(cloud.dailyStreak) || 0);
+      if (cloud.lastDailyDate === todayKey()) s.lastDailyDate = todayKey();
+      s.tutorialDone = Boolean(s.tutorialDone || cloud.tutorialDone);
+      s.tutorialStage = Math.max(s.tutorialStage || 0, Number(cloud.tutorialStage) || 0);
+      s.introSeen = Boolean(s.introSeen || cloud.introSeen);
+      if (cloud.ranked) {
+        s.ranked = s.ranked || { rr: 0, peakRR: 0, wins: 0, played: 0 };
+        s.ranked.rr = Math.max(s.ranked.rr || 0, Number(cloud.ranked.rr) || 0);
+        s.ranked.peakRR = Math.max(s.ranked.peakRR || 0, Number(cloud.ranked.peakRR) || 0);
+        s.ranked.wins = Math.max(s.ranked.wins || 0, Number(cloud.ranked.wins) || 0);
+        s.ranked.played = Math.max(s.ranked.played || 0, Number(cloud.ranked.played) || 0);
+      }
+      s.unlockedMonsters = union(s.unlockedMonsters, cloud.unlockedMonsters);
+      s.unlockedSurvivors = union(s.unlockedSurvivors, cloud.unlockedSurvivors);
+      s.unlockedWeapons = union(s.unlockedWeapons, cloud.unlockedWeapons);
+      s.unlockedSkins = union(s.unlockedSkins, cloud.unlockedSkins);
+      s.unlockedAuras = union(s.unlockedAuras, cloud.unlockedAuras);
+      s.unlockedHats = union(s.unlockedHats, cloud.unlockedHats);
+      s.unlockedTrails = union(s.unlockedTrails, cloud.unlockedTrails);
+      s.claimedMilestones = union(s.claimedMilestones, cloud.claimedMilestones);
+      if (cloud.packs && typeof cloud.packs === 'object') {
+        for (const k of Object.keys(s.packs)) {
+          s.packs[k] = Math.max(s.packs[k] || 0, Number(cloud.packs[k]) || 0);
+        }
+      }
+      if (cloud.stats && typeof cloud.stats === 'object') {
+        for (const k of Object.keys(s.stats)) {
+          s.stats[k] = Math.max(s.stats[k] || 0, Number(cloud.stats[k]) || 0);
+        }
+      }
+      if (cloud.dailyQuests && cloud.dailyQuests.date === todayKey() && Array.isArray(cloud.dailyQuests.items)) {
+        this._ensureDailyQuests();
+        for (const cq of cloud.dailyQuests.items) {
+          const lq = s.dailyQuests.items.find((x) => x.id === cq.id);
+          if (lq) {
+            lq.progress = Math.max(lq.progress || 0, Number(cq.progress) || 0);
+            lq.claimed = Boolean(lq.claimed || cq.claimed);
+          }
+        }
+        s.dailyQuests.bonusClaimed = Boolean(s.dailyQuests.bonusClaimed || cloud.dailyQuests.bonusClaimed);
+      }
+      this._save(true);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   _load() {
@@ -172,10 +351,19 @@ export class ProfileStore {
     }
   }
 
-  _save() {
+  _save(skipCloud = false) {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
     } catch {}
+    if (!skipCloud && this._cloudWriter) {
+      clearTimeout(this._cloudTimer);
+      this._cloudTimer = setTimeout(() => {
+        try {
+          const payload = this.exportCloudPayload();
+          if (payload) this._cloudWriter(payload);
+        } catch {}
+      }, 1100);
+    }
     for (const fn of this.listeners) fn(this.state);
   }
 
@@ -704,6 +892,160 @@ export class ProfileStore {
 
   canClaimDaily() { return this.state.lastDailyDate !== todayKey(); }
   getNextDailySpec() { return DAILY_REWARDS[this.state.dailyStreak % DAILY_REWARDS.length]; }
+  getTodayClaimedDailySpec() {
+    return DAILY_REWARDS[(Math.max(1, this.state.dailyStreak || 1) - 1) % DAILY_REWARDS.length];
+  }
+  getTomorrowDailySpec() {
+    const offset = this.canClaimDaily() ? 1 : 0;
+    return DAILY_REWARDS[(this.state.dailyStreak + offset) % DAILY_REWARDS.length];
+  }
+
+  getDailyQuests() {
+    this._ensureDailyQuests();
+    const dq = this.state.dailyQuests;
+    const allClaimed = dq.items.every((q) => q.claimed);
+    const bonusReady = allClaimed && !dq.bonusClaimed;
+    return {
+      date: dq.date,
+      items: dq.items,
+      allClaimed,
+      bonusReady,
+      bonusClaimed: Boolean(dq.bonusClaimed),
+    };
+  }
+
+  claimDailyQuest(id) {
+    this._ensureDailyQuests();
+    const q = this.state.dailyQuests.items.find((x) => x.id === id);
+    if (!q || q.claimed || (q.progress || 0) < q.target) return null;
+    q.claimed = true;
+    this.state.coins += q.coins || 0;
+    if (q.packId) this.state.packs[q.packId] = (this.state.packs[q.packId] || 0) + 1;
+    this._save();
+    return q;
+  }
+
+  claimDailyQuestBonus() {
+    const dq = this.getDailyQuests();
+    if (!dq.bonusReady) return null;
+    this.state.dailyQuests.bonusClaimed = true;
+    this.state.coins += 250;
+    this.state.packs.neon_pack = (this.state.packs.neon_pack || 0) + 1;
+    this._save();
+    return { coins: 250, packId: 'neon_pack', title: 'ALL 3 DAILY QUESTS BONUS' };
+  }
+
+  getLevelInfo() {
+    const level = Math.max(1, Math.floor(Number(this.state.level) || 1));
+    const xp = Math.max(0, Math.floor(Number(this.state.xp) || 0));
+    const curStart = getLevelThreshold(level);
+    const nextReq = getLevelThreshold(level + 1);
+    const span = Math.max(1, nextReq - curStart);
+    const intoLevel = Math.max(0, Math.min(span, xp - curStart));
+    const pct = Math.min(100, Math.round((intoLevel / span) * 100));
+    const nextSpec = getLevelRewardSpec(level + 1);
+    return {
+      level,
+      xp,
+      intoLevel,
+      span,
+      remainingXp: Math.max(0, nextReq - xp),
+      pct,
+      nextRewardLabel: nextSpec.label,
+    };
+  }
+
+  getStreakInfo() {
+    const winStreak = Math.max(0, Math.floor(Number(this.state.winStreak) || 0));
+    const bestWinStreak = Math.max(winStreak, Math.floor(Number(this.state.bestWinStreak) || 0));
+    const bonusPct = winStreak >= 2 ? Math.min(100, (winStreak - 1) * 25) : 0;
+    return { winStreak, bestWinStreak, bonusPct, bonusMult: 1 + bonusPct / 100 };
+  }
+
+  getFreeCrateStatus() {
+    const unlocked = (this.state.matchesCompleted || 0) >= 1;
+    const now = Date.now();
+    const nextAt = Number(this.state.nextFreeCrateAt) || 0;
+    const remainingMs = Math.max(0, nextAt - now);
+    return { unlocked, ready: unlocked && remainingMs === 0, remainingMs };
+  }
+
+  claimFreeCrate() {
+    const st = this.getFreeCrateStatus();
+    if (!st.ready) return null;
+    const pool = ['slime_pack', 'slime_pack', 'super_pack', 'neon_pack'];
+    const packId = pool[Math.floor(Math.random() * pool.length)];
+    this.state.coins += 100;
+    this.state.packs[packId] = (this.state.packs[packId] || 0) + 1;
+    this.state.nextFreeCrateAt = Date.now() + 4 * 60 * 60 * 1000;
+    this._save();
+    return { coins: 100, packId };
+  }
+
+  getTrialCandidateMonster() {
+    const candidates = MONSTERS.filter((m) => m.rarity === 'mythic' || m.rarity === 'legendary');
+    const unowned = candidates.filter((m) => !this.state.unlockedMonsters.includes(m.id));
+    const pool = unowned.length > 0 ? unowned : candidates;
+    return pool[Math.floor(Math.random() * pool.length)] || MONSTERS[MONSTERS.length - 1];
+  }
+
+  activateMythicTrial(monsterId = '') {
+    const m = monsterId ? MONSTERS.find((x) => x.id === monsterId) : this.getTrialCandidateMonster();
+    if (!m) return null;
+    this.state.trialMonsterId = m.id;
+    this.state.monsterPassActive = true;
+    this.state.monsterPassSource = 'trial';
+    this._save();
+    return m;
+  }
+
+  consumeMythicTrial() {
+    const id = this.state.trialMonsterId || '';
+    if (!id) return '';
+    this.state.trialMonsterId = '';
+    this._save();
+    return id;
+  }
+
+  getLobbyGoalSummary() {
+    const fc = this.getFreeCrateStatus();
+    if (fc.ready) {
+      return { ready: true, text: '🎁 FREE 4H CRATE READY! TAP TO OPEN!' };
+    }
+    const dq = this.getDailyQuests();
+    const readyQuest = dq.items.find((q) => !q.claimed && q.progress >= q.target);
+    if (readyQuest) {
+      return { ready: true, text: `🎁 CLAIM QUEST: ${readyQuest.title.toUpperCase()}!` };
+    }
+    if (dq.bonusReady) {
+      return { ready: true, text: '🎁 CLAIM DAILY BONUS: +250c + NEON PACK!' };
+    }
+    if (this.canClaimDaily()) {
+      const spec = this.getNextDailySpec();
+      return { ready: true, text: `🎁 DAILY LOGIN READY: ${spec.label.toUpperCase()}!` };
+    }
+    const tm = this.getThreeMatchStatus();
+    if (tm.ready) {
+      return { ready: true, text: `🎁 CLAIM 3/3 REWARD: ${tm.tierSpec.title.toUpperCase()}!` };
+    }
+    const st = this.getStreakInfo();
+    const lv = this.getLevelInfo();
+    if (st.winStreak >= 2) {
+      return { ready: false, text: `🔥 ${st.winStreak}-WIN STREAK (+${st.bonusPct}%c) · LVL ${lv.level} (${lv.pct}%)` };
+    }
+    if (lv.pct >= 55) {
+      return { ready: false, text: `LVL ${lv.level} → ${lv.level + 1} (${lv.remainingXp} XP) · ${lv.nextRewardLabel}` };
+    }
+    const openQuest = dq.items
+      .filter((q) => !q.claimed)
+      .sort((a, b) => (b.progress / b.target) - (a.progress / a.target))[0];
+    if (openQuest) {
+      const prize = openQuest.packId ? `+${openQuest.coins}c + PACK` : `+${openQuest.coins}c`;
+      return { ready: false, text: `LVL ${lv.level} · ${openQuest.title.toUpperCase()} (${Math.min(openQuest.progress, openQuest.target)}/${openQuest.target}) ${prize}` };
+    }
+    const tmr = this.getTomorrowDailySpec();
+    return { ready: false, text: `LVL ${lv.level} · TOMORROW (${tmr.label.toUpperCase()}): ${tmr.desc.toUpperCase()}` };
+  }
 
   claimDailyReward() {
     if (!this.canClaimDaily()) return null;
@@ -738,25 +1080,73 @@ export class ProfileStore {
   }
 
   hasAnyRewardAction() {
+    const dq = this.getDailyQuests();
     return (
       this.getTotalPackCount() > 0 ||
+      this.getFreeCrateStatus().ready ||
       this.getThreeMatchStatus().ready ||
       this.canClaimDaily() ||
+      dq.bonusReady ||
+      dq.items.some((q) => !q.claimed && q.progress >= q.target) ||
       COLLECTION_MILESTONES.some((m) => this.isMilestoneClaimable(m))
     );
   }
 
   setRolePref(pref) { this.state.rolePref = pref; this._save(); }
 
-  recordMatch({ won, eliminations = 0, weaponHits = 0, coopActions = 0, coinsEarned = 0 }) {
+  recordMatch({ won, eliminations = 0, weaponHits = 0, coopActions = 0, coinsEarned = 0, arenaPickups = 0 }) {
     this.state.matchesCompleted += 1;
     this.state.stats.matchesPlayed += 1;
-    if (won) this.state.stats.wins += 1;
+    if (won) {
+      this.state.stats.wins += 1;
+      this.state.winStreak = (this.state.winStreak || 0) + 1;
+      this.state.bestWinStreak = Math.max(this.state.bestWinStreak || 0, this.state.winStreak);
+    } else {
+      this.state.winStreak = 0;
+    }
     this.state.stats.eliminations += eliminations;
     this.state.stats.weaponHits += weaponHits;
     this.state.stats.coopActions += coopActions;
     this.state.coins += coinsEarned;
+
+    // Award Account XP & process automatic Level-Up Unlocks!
+    const xpGained = 65 + (won ? 35 : 0) + Math.min(8, eliminations + weaponHits) * 12 + Math.min(12, arenaPickups) * 4;
+    this.state.xp = (this.state.xp || 0) + xpGained;
+    let level = Math.max(1, Math.floor(Number(this.state.level) || 1));
+    const unlockedRewards = [];
+    while (this.state.xp >= getLevelThreshold(level + 1)) {
+      level += 1;
+      const spec = getLevelRewardSpec(level);
+      this.state.coins += spec.coins || 0;
+      if (spec.packId) this.state.packs[spec.packId] = (this.state.packs[spec.packId] || 0) + 1;
+      if (spec.unlock) {
+        const newly = this._grantItem(spec.unlock.category, spec.unlock.id);
+        if (!newly) this.state.coins += 180;
+      }
+      unlockedRewards.push(spec);
+    }
+    this.state.level = level;
+
+    // Advance Daily Quests progress!
+    this._ensureDailyQuests();
+    for (const q of this.state.dailyQuests.items) {
+      if (q.claimed) continue;
+      if (q.id === 'q_play') q.progress = Math.min(q.target, (q.progress || 0) + 1);
+      else if (q.id === 'q_loot') q.progress = Math.min(q.target, (q.progress || 0) + Math.max(0, arenaPickups));
+      else if (q.id === 'q_action') {
+        const delta = won ? q.target : Math.max(0, eliminations + weaponHits);
+        q.progress = Math.min(q.target, (q.progress || 0) + delta);
+      }
+    }
     this._save();
+    return {
+      xpGained,
+      leveledUp: unlockedRewards.length > 0,
+      newLevel: level,
+      unlockedRewards,
+      streak: this.getStreakInfo(),
+      levelInfo: this.getLevelInfo(),
+    };
   }
 
   /* ---------------- MONSTER PASS ---------------- */

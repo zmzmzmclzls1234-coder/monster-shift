@@ -28,7 +28,9 @@ export class TopDownCamera {
 
     this.followRate = 7.0;
     this.offsetRate = 4.5;
+    this.currentMode = 'lobby';
     this.aspect = window.innerWidth / Math.max(1, window.innerHeight);
+    this._syncFovForAspect();
 
     this._applyImmediate();
   }
@@ -37,16 +39,29 @@ export class TopDownCamera {
     this.reducedShake = Boolean(val);
   }
 
-  onResize(width, height) {
-    this.aspect = width / Math.max(1, height);
+  _syncFovForAspect() {
+    // Compensate vertical FOV on narrow portrait phones so horizontal arena visibility stays wide & fair!
+    const desiredFov = this.aspect < 0.65 ? 54 : this.aspect < 1.0 ? 49 : 44;
+    if (this.camera.fov !== desiredFov) {
+      this.camera.fov = desiredFov;
+    }
     this.camera.aspect = this.aspect;
     this.camera.updateProjectionMatrix();
   }
 
+  onResize(width, height) {
+    this.aspect = width / Math.max(1, height);
+    this._syncFovForAspect();
+    if (this.currentMode && this.currentMode !== 'match') {
+      this.setMode(this.currentMode, false);
+    }
+  }
+
   _mobileZoomFactor() {
-    // Pull top-down camera slightly higher on narrow portrait mobile screens so arena stays readable
-    if (this.aspect < 0.78) return 1.32;
-    if (this.aspect < 1.05) return 1.15;
+    // Pull top-down camera higher on narrow portrait mobile screens so full arena & characters stay crisp
+    if (this.aspect < 0.62) return 1.46;
+    if (this.aspect < 0.85) return 1.28;
+    if (this.aspect < 1.05) return 1.14;
     return 1.0;
   }
 
@@ -55,7 +70,9 @@ export class TopDownCamera {
    * Match gameplay maintains a crisp 3D TOP-DOWN camera perspective.
    */
   setMode(mode, instant = false) {
+    this.currentMode = mode;
     const zf = this._mobileZoomFactor();
+    const isPortrait = this.aspect < 0.92;
     if (mode === 'intro') {
       this.clampEnabled = false;
       this.targetFocus.set(0, 1.15, 0);
@@ -70,17 +87,23 @@ export class TopDownCamera {
       this.offsetRate = 5.0;
     } else if (mode === 'lobby') {
       this.clampEnabled = false;
-      this.targetFocus.set(0, 1.55, 0);
-      this.targetOffset.set(0, 2.25 * zf, 7.6 * zf); // Front-facing 3D character showcase!
+      this.targetFocus.set(0, isPortrait ? 1.35 : 1.55, 0);
+      this.targetOffset.set(0, 2.25 * zf, (isPortrait ? 6.9 : 7.6) * zf); // Front-facing 3D character showcase!
       this.followRate = 5.5;
       this.offsetRate = 4.2;
     } else if (mode === 'lobbyDrawer') {
-      // Smoothly frame the live 3D character on the LEFT half of the screen while Locker/Shop sits on the right!
+      // Landscape: frame character on LEFT half while drawer sits on right.
+      // Portrait: frame character in UPPER showcase window while bottom-sheet drawer sits below!
       this.clampEnabled = false;
-      const shiftX = this.aspect >= 1.0 ? 1.95 : 0.75;
-      const shiftY = this.aspect < 1.05 ? 1.35 : 1.55;
-      this.targetFocus.set(shiftX, shiftY, 0);
-      this.targetOffset.set(0, 2.2 * zf, 7.6 * zf);
+      if (isPortrait) {
+        this.targetFocus.set(0, -0.35, 0);
+        this.targetOffset.set(0, 2.15 * zf, 7.2 * zf);
+      } else {
+        const shiftX = this.aspect >= 1.0 ? 1.95 : 0.75;
+        const shiftY = this.aspect < 1.05 ? 1.35 : 1.55;
+        this.targetFocus.set(shiftX, shiftY, 0);
+        this.targetOffset.set(0, 2.2 * zf, 7.6 * zf);
+      }
       this.followRate = 6.5;
       this.offsetRate = 4.8;
     } else if (mode === 'match') {

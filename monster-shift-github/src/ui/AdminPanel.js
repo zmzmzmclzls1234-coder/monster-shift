@@ -20,19 +20,41 @@ export class AdminPanel {
     this._spectateFrame = null;
     this._localSpectateTimer = null;
     this._giftTarget = null; // { id, name }
+    this._bodyRendered = false;
+    this._lastPlayersSig = '';
+
+    // Persistent Admin Abuse form state (never wiped by background profile saves or server polls!)
+    this._allCoins = 500;
+    this._allPackId = '';
+    this._allPackCount = 1;
+    this._allReason = '';
+    this._pgCoins = 500;
+    this._pgPackId = '';
+    this._pgPackCount = 1;
+    this._pgReason = '';
 
     this._buildDom();
     this.profile.subscribe(() => {
-      // Never wipe text inputs inside ADMIN.EXE while the admin is actively typing!
-      const active = document.activeElement;
-      if (active && this.panel?.contains(active) && (active.tagName === 'INPUT' || active.tagName === 'SELECT')) return;
+      // If panel is already open & rendered, patch cheat toggles in-place WITHOUT destroying inputs/buttons!
+      if (!this.minimized && this._bodyRendered && this.profile.isAdminUnlocked()) {
+        this._patchCheatControlsInPlace();
+        return;
+      }
       this.sync();
     });
     this.network?.subscribe((evt) => {
-      if (evt.type === 'server_stats' || evt.type === 'status' || evt.type === 'ping' || evt.type === 'admin_event_state') {
+      if (evt.type === 'server_stats' || evt.type === 'status') {
         if (!this.minimized && this.profile.isAdminUnlocked()) {
           this._patchLiveTelemetry();
-          this._patchOnlinePlayersList();
+          this._patchOnlinePlayersList(false);
+          this._patchLiveEventStatus();
+        }
+      } else if (evt.type === 'ping') {
+        if (!this.minimized && this.profile.isAdminUnlocked()) {
+          this._patchLiveTelemetry();
+        }
+      } else if (evt.type === 'admin_event_state') {
+        if (!this.minimized && this.profile.isAdminUnlocked()) {
           this._patchLiveEventStatus();
         }
       } else if (evt.type === 'admin_spectate_frame') {
@@ -46,9 +68,12 @@ export class AdminPanel {
           this._stopSpectate(false);
         }
       } else if (evt.type === 'admin_ack') {
-        const suffix = evt.localOnly ? ' (LOCAL · PUSH server.js!)' : ` (${evt.reached || 1} ONLINE)`;
+        const suffix = evt.localOnly ? ' (LOCAL ONLY)' : ` (${evt.reached || 1} ONLINE)`;
         if (evt.action === 'broadcast') this.log(`SENT GLOBAL MSG${suffix}`);
-        else if (evt.action === 'grant_coins') this.log(`GAVE +${evt.amount}c TO ALL${suffix}`);
+        else if (evt.action === 'grant_coins' || evt.action === 'grant_all') {
+          const what = [evt.amount > 0 ? `+${evt.amount}c` : '', evt.packCount > 0 ? `+${evt.packCount}p` : ''].filter(Boolean).join(' ');
+          this.log(`GAVE ${what || 'REWARD'} TO ALL${suffix}`);
+        }
         else if (evt.action === 'gift_player') {
           const what = [evt.coins > 0 ? `+${evt.coins}c` : '', evt.packCount > 0 ? `+${evt.packCount}p` : ''].filter(Boolean).join(' ');
           this.log(evt.ok ? `GIFTED ${what} -> ${evt.targetName || 'PLAYER'}${evt.localOnly ? ' (LOCAL)' : ''}` : 'TARGET PLAYER OFFLINE');
@@ -110,6 +135,31 @@ export class AdminPanel {
       e.stopPropagation();
       this.sound?.playClick();
       this.minimize();
+    });
+
+    // Event delegation on stable body container so WATCH / GIFT clicks can NEVER be dropped by live polls!
+    this.bodyEl?.addEventListener('click', (e) => {
+      const watchBtn = e.target.closest?.('[data-watch-id]');
+      if (watchBtn) {
+        e.stopPropagation();
+        this.sound?.playClick();
+        const id = watchBtn.dataset.watchId;
+        const name = watchBtn.dataset.watchName || 'Player';
+        if (this._spectateTarget?.id === id) this._stopSpectate(true);
+        else this._startSpectate({ id, name });
+        return;
+      }
+      const giftBtn = e.target.closest?.('[data-gift-id]');
+      if (giftBtn) {
+        e.stopPropagation();
+        this.sound?.playClick();
+        const id = giftBtn.dataset.giftId;
+        const name = giftBtn.dataset.giftName || 'Player';
+        if (this._giftTarget?.id === id) this._giftTarget = null;
+        else this._giftTarget = { id, name };
+        this._patchOnlinePlayersList(true);
+        this._patchTargetGiftSection();
+      }
     });
 
     this._bindDrag(this.panel.querySelector('#adm-drag-handle'));
@@ -281,30 +331,25 @@ export class AdminPanel {
     `;
   }
 
-  _patchOnlinePlayersList() {
+  _patchOnlinePlayersList(force = false) {
     const slot = this.panel?.querySelector('#adm-players-slot');
     if (!slot) return;
+    const list = this._getOnlineList();
+
+    // Auto-heal _giftTarget socket ID if target player reconnected under the same nickname
+    if (this._giftTarget && this._giftTarget.id !== 'local_self' && !list.some((p) => p.id === this._giftTarget.id)) {
+      const sameName = list.find((p) => p.name === this._giftTarget.name);
+      if (sameName) {
+        this._giftTarget.id = sameName.id;
+      }
+    }
+
+    const sig =
+      list.map((p) => `${p.id}:${p.name}:${p.mode}:${p.gameMode}:${p.rr}`).join('|') +
+      `||w:${this._spectateTarget?.id || ''}||g:${this._giftTarget?.id || ''}`;
+    if (!force && sig === this._lastPlayersSig && slot.children.length > 0) return;
+    this._lastPlayersSig = sig;
     slot.innerHTML = this._formatOnlinePlayersHtml();
-    slot.querySelectorAll('[data-watch-id]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        this.sound?.playClick();
-        const id = btn.dataset.watchId;
-        const name = btn.dataset.watchName || 'Player';
-        if (this._spectateTarget?.id === id) this._stopSpectate(true);
-        else this._startSpectate({ id, name });
-      });
-    });
-    slot.querySelectorAll('[data-gift-id]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        this.sound?.playClick();
-        const id = btn.dataset.giftId;
-        const name = btn.dataset.giftName || 'Player';
-        if (this._giftTarget?.id === id) this._giftTarget = null;
-        else this._giftTarget = { id, name };
-        this._patchOnlinePlayersList();
-        this._patchTargetGiftSection();
-      });
-    });
   }
 
   _patchSpectateSection() {
@@ -565,16 +610,16 @@ export class AdminPanel {
           <button id="adm-pg-close" class="adm-mini-refresh" type="button">✕</button>
         </div>
         <div class="adm-input-row">
-          <input id="adm-pg-coins" class="adm-input amt" type="number" min="0" max="100000" value="500" />
+          <input id="adm-pg-coins" class="adm-input amt" type="number" min="0" max="100000" value="${this._pgCoins}" />
           <select id="adm-pg-pack" class="adm-input">
-            <option value="">No Pack</option>
-            <option value="xmas_pack">❄ Xmas Pack</option>
-            <option value="slime_pack">Slime Pack</option>
-            <option value="super_pack">Super Pack</option>
-            <option value="neon_pack">Neon Pack</option>
-            <option value="legendary_pack">Legendary Pack</option>
+            <option value="" ${this._pgPackId === '' ? 'selected' : ''}>No Pack</option>
+            <option value="xmas_pack" ${this._pgPackId === 'xmas_pack' ? 'selected' : ''}>❄ Xmas Pack</option>
+            <option value="slime_pack" ${this._pgPackId === 'slime_pack' ? 'selected' : ''}>Slime Pack</option>
+            <option value="super_pack" ${this._pgPackId === 'super_pack' ? 'selected' : ''}>Super Pack</option>
+            <option value="neon_pack" ${this._pgPackId === 'neon_pack' ? 'selected' : ''}>Neon Pack</option>
+            <option value="legendary_pack" ${this._pgPackId === 'legendary_pack' ? 'selected' : ''}>Legendary Pack</option>
           </select>
-          <input id="adm-pg-pcount" class="adm-input" style="flex:0 0 38px;text-align:center" type="number" min="1" max="20" value="1" title="Pack Count" />
+          <input id="adm-pg-pcount" class="adm-input" style="flex:0 0 38px;text-align:center" type="number" min="1" max="20" value="${this._pgPackCount}" title="Pack Count" />
         </div>
         <div class="adm-preset-row">
           <button class="adm-preset-btn" data-pg-c="0" type="button">0c</button>
@@ -583,7 +628,7 @@ export class AdminPanel {
           <button class="adm-preset-btn" data-pg-c="5000" type="button">+5Kc</button>
         </div>
         <div class="adm-input-row">
-          <input id="adm-pg-reason" class="adm-input" type="text" maxlength="80" placeholder="Personal note (optional)..." autocomplete="off" />
+          <input id="adm-pg-reason" class="adm-input" type="text" maxlength="80" value="${this._pgReason.replace(/"/g, '&quot;')}" placeholder="Personal note (optional)..." autocomplete="off" />
           <button id="adm-pg-send" class="adm-send-btn gold" type="button">SEND</button>
         </div>
       </div>
@@ -592,28 +637,52 @@ export class AdminPanel {
     const packEl = box.querySelector('#adm-pg-pack');
     const pCountEl = box.querySelector('#adm-pg-pcount');
     const reasonEl = box.querySelector('#adm-pg-reason');
+
+    coinsEl?.addEventListener('input', () => {
+      this._pgCoins = Math.max(0, Math.min(100000, Math.floor(Number(coinsEl.value) || 0)));
+    });
+    packEl?.addEventListener('change', () => {
+      this._pgPackId = packEl.value || '';
+    });
+    pCountEl?.addEventListener('input', () => {
+      this._pgPackCount = Math.max(1, Math.min(20, Math.floor(Number(pCountEl.value) || 1)));
+    });
+    reasonEl?.addEventListener('input', () => {
+      this._pgReason = reasonEl.value || '';
+    });
+
     box.querySelector('#adm-pg-close')?.addEventListener('click', () => {
       this.sound?.playClick();
       this._giftTarget = null;
-      this._patchOnlinePlayersList();
+      this._patchOnlinePlayersList(true);
       this._patchTargetGiftSection();
     });
     box.querySelectorAll('[data-pg-c]').forEach((b) => {
       b.addEventListener('click', () => {
         this.sound?.playClick();
-        if (coinsEl) coinsEl.value = b.dataset.pgC;
+        const v = Math.max(0, Number(b.dataset.pgC) || 0);
+        this._pgCoins = v;
+        if (coinsEl) coinsEl.value = String(v);
       });
     });
     const doSendPersonal = () => {
+      const curTarget = this._giftTarget || t;
       const coins = Math.max(0, Math.min(100000, Math.floor(Number(coinsEl?.value) || 0)));
       const packId = packEl?.value || '';
       const packCount = packId ? Math.max(1, Math.min(20, Math.floor(Number(pCountEl?.value) || 1))) : 0;
-      if (!coins && !packCount) return;
+      if (!coins && !packCount) {
+        this.log('SELECT COINS > 0 OR A PACK FIRST!');
+        return;
+      }
       const reason = (reasonEl?.value || '').trim();
+      this._pgCoins = coins;
+      this._pgPackId = packId;
+      this._pgPackCount = packCount || 1;
+      this._pgReason = '';
       this.sound?.playCoin();
       this.network?.sendAdminGiftPlayer?.({
-        targetId: t.id,
-        targetName: t.name,
+        targetId: curTarget.id,
+        targetName: curTarget.name,
         coins,
         packId,
         packCount,
@@ -621,15 +690,18 @@ export class AdminPanel {
         sender: this.profile.state.playerName || 'ADMIN',
       });
       if (reasonEl) reasonEl.value = '';
-      this.log(`SENDING GIFT -> ${t.name}...`);
+      this.log(`SENDING GIFT -> ${curTarget.name}...`);
     };
     box.querySelector('#adm-pg-send')?.addEventListener('click', doSendPersonal);
-    reasonEl?.addEventListener('keydown', (e) => {
-      e.stopPropagation();
-      if (e.key === 'Enter') { e.preventDefault(); doSendPersonal(); }
+    [coinsEl, pCountEl, reasonEl].forEach((inp) => {
+      inp?.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          doSendPersonal();
+        }
+      });
     });
-    coinsEl?.addEventListener('keydown', (e) => e.stopPropagation());
-    pCountEl?.addEventListener('keydown', (e) => e.stopPropagation());
   }
 
   _formatTelemetryHtml() {
@@ -697,10 +769,45 @@ export class AdminPanel {
     if (stopBtn) stopBtn.disabled = !(ev && ev.coinMultiplier > 1 && ev.remainingMs > 0);
   }
 
+  _patchCheatControlsInPlace() {
+    const cfg = this.profile.getAdminConfig();
+    this.chip.classList.toggle('off', !cfg.enabled);
+    this.panel.classList.toggle('adm-disabled', !cfg.enabled);
+    if (this.chipLabelEl) {
+      this.chipLabelEl.textContent = `ADMIN.EXE [${cfg.enabled ? 'ON' : 'OFF'}]`;
+    }
+    if (this.ledEl) {
+      this.ledEl.className = `adm-led ${cfg.enabled ? 'on' : 'off'}`;
+    }
+    const masterBtn = this.bodyEl?.querySelector('#adm-master-toggle');
+    if (masterBtn) {
+      masterBtn.classList.toggle('off', !cfg.enabled);
+      const tag = masterBtn.querySelector('.adm-master-tag');
+      if (tag) tag.textContent = cfg.enabled ? 'ACTIVE' : 'DISABLED';
+    }
+    this.bodyEl?.querySelectorAll('[data-adm-opt]').forEach((btn) => {
+      const key = btn.dataset.admOpt;
+      btn.disabled = !cfg.enabled;
+      btn.classList.toggle('on', Boolean(cfg[key]));
+      const pill = btn.querySelector('.adm-pill');
+      if (pill) pill.textContent = cfg[key] ? 'ON' : 'OFF';
+    });
+    this.bodyEl?.querySelectorAll('[data-adm-role]').forEach((btn) => {
+      const r = btn.dataset.admRole;
+      btn.disabled = !cfg.enabled;
+      btn.classList.toggle('active', (cfg.forceRole || 'random') === r);
+    });
+    ['#adm-add-packs', '#adm-add-rr', '#adm-instant-win', '#adm-max-growth'].forEach((sel) => {
+      const el = this.bodyEl?.querySelector(sel);
+      if (el) el.disabled = !cfg.enabled;
+    });
+  }
+
   sync() {
     const cfg = this.profile.getAdminConfig();
     if (!cfg.unlocked) {
       this._stopStatsPolling();
+      this._bodyRendered = false;
       this.panel.classList.add('hidden');
       this.chip.classList.add('hidden');
       return;
@@ -718,7 +825,14 @@ export class AdminPanel {
     }
 
     if (!this.minimized) {
-      this._renderBody(cfg);
+      if (!this._bodyRendered) {
+        this._renderBody(cfg);
+      } else {
+        this._patchCheatControlsInPlace();
+        this._patchLiveTelemetry();
+        this._patchOnlinePlayersList(true);
+        this._patchLiveEventStatus();
+      }
       this._renderConsole();
       this._startStatsPolling();
     } else {
@@ -763,16 +877,28 @@ export class AdminPanel {
           <button id="adm-msg-send" class="adm-send-btn" type="button">SEND</button>
         </div>
 
-        <div class="adm-sub-lbl" style="margin-top:6px">GIVE COINS TO ALL ONLINE PLAYERS</div>
+        <div class="adm-sub-lbl" style="margin-top:6px">GIVE COINS / PACKS TO ALL ONLINE PLAYERS</div>
         <div class="adm-input-row">
-          <input id="adm-coin-amt" class="adm-input amt" type="number" min="1" max="100000" value="500" />
-          <input id="adm-coin-reason" class="adm-input" type="text" maxlength="80" placeholder="Gift note (optional)..." autocomplete="off" />
+          <input id="adm-coin-amt" class="adm-input amt" type="number" min="0" max="100000" value="${this._allCoins}" title="Coins Amount" />
+          <select id="adm-all-pack" class="adm-input" title="Optional Bonus Pack for All">
+            <option value="" ${this._allPackId === '' ? 'selected' : ''}>No Pack</option>
+            <option value="xmas_pack" ${this._allPackId === 'xmas_pack' ? 'selected' : ''}>❄ Xmas Pack</option>
+            <option value="slime_pack" ${this._allPackId === 'slime_pack' ? 'selected' : ''}>Slime Pack</option>
+            <option value="super_pack" ${this._allPackId === 'super_pack' ? 'selected' : ''}>Super Pack</option>
+            <option value="neon_pack" ${this._allPackId === 'neon_pack' ? 'selected' : ''}>Neon Pack</option>
+            <option value="legendary_pack" ${this._allPackId === 'legendary_pack' ? 'selected' : ''}>Legendary Pack</option>
+          </select>
+          <input id="adm-all-pcount" class="adm-input" style="flex:0 0 38px;text-align:center" type="number" min="1" max="20" value="${this._allPackCount}" title="Pack Count" />
         </div>
         <div class="adm-preset-row">
+          <button class="adm-preset-btn" data-coin-preset="0" type="button">0c</button>
           <button class="adm-preset-btn" data-coin-preset="100" type="button">+100</button>
           <button class="adm-preset-btn" data-coin-preset="500" type="button">+500</button>
           <button class="adm-preset-btn" data-coin-preset="1000" type="button">+1K</button>
           <button class="adm-preset-btn" data-coin-preset="5000" type="button">+5K</button>
+        </div>
+        <div class="adm-input-row">
+          <input id="adm-coin-reason" class="adm-input" type="text" maxlength="80" value="${this._allReason.replace(/"/g, '&quot;')}" placeholder="Gift note (optional) &amp; Enter..." autocomplete="off" />
           <button id="adm-give-coins" class="adm-send-btn gold" type="button">GIVE ALL</button>
         </div>
 
@@ -831,73 +957,122 @@ export class AdminPanel {
       </div>
     `;
 
+    this._bodyRendered = true;
+
     this.bodyEl.querySelector('#adm-refresh-stats')?.addEventListener('click', () => {
       this.sound?.playClick();
       const ok = this.network?.requestServerStats?.(true);
       this._statsRequestedOnce = Boolean(ok);
       this._patchLiveTelemetry();
-      this._patchOnlinePlayersList();
+      this._patchOnlinePlayersList(true);
       this.log(ok ? 'FETCHED LIVE SERVER TELEMETRY' : 'SERVER DISCONNECTED');
     });
 
-    this._patchOnlinePlayersList();
+    this._patchOnlinePlayersList(true);
     this._patchSpectateSection();
     this._patchTargetGiftSection();
 
     this.bodyEl.querySelector('#adm-master-toggle')?.addEventListener('click', () => {
       this.sound?.playClick();
-      const next = !cfg.enabled;
+      const curCfg = this.profile.getAdminConfig();
+      const next = !curCfg.enabled;
       this.profile.toggleAdminMaster(next);
       this.log(next ? 'ADMIN MODE ENABLED' : 'ADMIN MODE DISABLED');
       this.cb.onAdminChanged?.();
     });
 
-    // LIVE ADMIN ABUSE bindings (Global Banner, Coin Drop, Coin Multiplier Event)
-    const senderName = this.profile.state.playerName || 'ADMIN';
+    // LIVE ADMIN ABUSE bindings (Global Banner, Coin+Pack Drop, Coin Multiplier Event)
+    const getSenderName = () => this.profile.state.playerName || 'ADMIN';
     const msgInput = this.bodyEl.querySelector('#adm-msg-input');
+    let lastMsgSentAt = 0;
     const doSendGlobalMsg = () => {
+      const now = Date.now();
+      if (now - lastMsgSentAt < 120) return;
       const txt = (msgInput?.value || '').trim();
       if (!txt) return;
+      lastMsgSentAt = now;
       this.sound?.playClick();
-      this.network?.sendAdminBroadcast?.(txt, senderName);
+      this.network?.sendAdminBroadcast?.(txt, getSenderName());
       if (msgInput) msgInput.value = '';
       this.log(`BROADCASTING: "${txt.slice(0, 22)}"...`);
     };
     this.bodyEl.querySelector('#adm-msg-send')?.addEventListener('click', doSendGlobalMsg);
     msgInput?.addEventListener('keydown', (e) => {
       e.stopPropagation();
-      if (e.key === 'Enter') {
+      if (e.key === 'Enter' || e.code === 'Enter') {
         e.preventDefault();
-        doSendGlobalMsg();
+        // Handle Korean/CJK IME composition cleanly so 1st Enter sends full syllable without leaving trailing char!
+        if (e.isComposing || e.keyCode === 229) {
+          setTimeout(() => {
+            msgInput.blur();
+            msgInput.focus();
+            doSendGlobalMsg();
+          }, 0);
+        } else {
+          doSendGlobalMsg();
+        }
       }
     });
 
     const coinAmtInput = this.bodyEl.querySelector('#adm-coin-amt');
+    const allPackSelect = this.bodyEl.querySelector('#adm-all-pack');
+    const allPCountInput = this.bodyEl.querySelector('#adm-all-pcount');
     const coinReasonInput = this.bodyEl.querySelector('#adm-coin-reason');
+
+    coinAmtInput?.addEventListener('input', () => {
+      this._allCoins = Math.max(0, Math.min(100000, Math.floor(Number(coinAmtInput.value) || 0)));
+    });
+    allPackSelect?.addEventListener('change', () => {
+      this._allPackId = allPackSelect.value || '';
+    });
+    allPCountInput?.addEventListener('input', () => {
+      this._allPackCount = Math.max(1, Math.min(20, Math.floor(Number(allPCountInput.value) || 1)));
+    });
+    coinReasonInput?.addEventListener('input', () => {
+      this._allReason = coinReasonInput.value || '';
+    });
+
     this.bodyEl.querySelectorAll('[data-coin-preset]').forEach((btn) => {
       btn.addEventListener('click', () => {
         this.sound?.playClick();
-        if (coinAmtInput) coinAmtInput.value = btn.dataset.coinPreset;
+        const v = Math.max(0, Number(btn.dataset.coinPreset) || 0);
+        this._allCoins = v;
+        if (coinAmtInput) coinAmtInput.value = String(v);
       });
     });
     const doGiveCoinsAll = () => {
-      const amt = Math.max(1, Math.min(100000, Math.floor(Number(coinAmtInput?.value) || 0)));
-      if (!amt) return;
+      const coins = Math.max(0, Math.min(100000, Math.floor(Number(coinAmtInput?.value) || 0)));
+      const packId = allPackSelect?.value || '';
+      const packCount = packId ? Math.max(1, Math.min(20, Math.floor(Number(allPCountInput?.value) || 1))) : 0;
+      if (!coins && !packCount) {
+        this.log('SELECT COINS > 0 OR A PACK FIRST!');
+        return;
+      }
       const reason = (coinReasonInput?.value || '').trim();
+      this._allCoins = coins;
+      this._allPackId = packId;
+      this._allPackCount = packCount || 1;
+      this._allReason = '';
       this.sound?.playCoin();
-      this.network?.sendAdminGrantCoins?.(amt, reason, senderName);
+      if (this.network?.sendAdminGrantAll) {
+        this.network.sendAdminGrantAll({ coins, packId, packCount, reason, sender: getSenderName() });
+      } else {
+        this.network?.sendAdminGrantCoins?.(coins, reason, getSenderName());
+      }
       if (coinReasonInput) coinReasonInput.value = '';
-      this.log(`DROPPING +${amt} COINS TO ALL...`);
+      const summary = [coins > 0 ? `+${coins}c` : '', packCount > 0 ? `+${packCount}p` : ''].filter(Boolean).join(' ');
+      this.log(`DROPPING ${summary} TO ALL...`);
     };
     this.bodyEl.querySelector('#adm-give-coins')?.addEventListener('click', doGiveCoinsAll);
-    coinReasonInput?.addEventListener('keydown', (e) => {
-      e.stopPropagation();
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        doGiveCoinsAll();
-      }
+    [coinAmtInput, allPCountInput, coinReasonInput].forEach((inp) => {
+      inp?.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          doGiveCoinsAll();
+        }
+      });
     });
-    coinAmtInput?.addEventListener('keydown', (e) => e.stopPropagation());
 
     const startEvBtn = this.bodyEl.querySelector('#adm-start-event');
     this.bodyEl.querySelectorAll('[data-ev-mult]').forEach((btn) => {
@@ -918,20 +1093,21 @@ export class AdminPanel {
     });
     startEvBtn?.addEventListener('click', () => {
       this.sound?.playVictory();
-      this.network?.sendAdminCoinEvent?.(this._eventMult, this._eventMins, `${this._eventMult}X COIN EVENT!`, senderName);
+      this.network?.sendAdminCoinEvent?.(this._eventMult, this._eventMins, `${this._eventMult}X COIN EVENT!`, getSenderName());
       this.log(`STARTING ${this._eventMult}X COINS (${this._eventMins}m)...`);
     });
     this.bodyEl.querySelector('#adm-stop-event')?.addEventListener('click', () => {
       this.sound?.playClick();
-      this.network?.sendAdminCoinEvent?.(1, 0, '', senderName);
+      this.network?.sendAdminCoinEvent?.(1, 0, '', getSenderName());
       this.log('STOPPING COIN EVENT...');
     });
 
     this.bodyEl.querySelectorAll('[data-adm-opt]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        if (!cfg.enabled) return;
+        const curCfg = this.profile.getAdminConfig();
+        if (!curCfg.enabled) return;
         const key = btn.dataset.admOpt;
-        const next = !cfg[key];
+        const next = !curCfg[key];
         this.sound?.playClick();
         this.profile.setAdminOption(key, next);
         this.log(`${key.toUpperCase()} => ${next ? 'ON' : 'OFF'}`);
@@ -941,7 +1117,8 @@ export class AdminPanel {
 
     this.bodyEl.querySelectorAll('[data-adm-role]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        if (!cfg.enabled) return;
+        const curCfg = this.profile.getAdminConfig();
+        if (!curCfg.enabled) return;
         const role = btn.dataset.admRole;
         this.sound?.playClick();
         this.profile.setAdminOption('forceRole', role);
@@ -950,14 +1127,14 @@ export class AdminPanel {
     });
 
     this.bodyEl.querySelector('#adm-add-packs')?.addEventListener('click', () => {
-      if (!cfg.enabled) return;
+      if (!this.profile.getAdminConfig().enabled) return;
       this.sound?.playCoin();
       this.profile.adminAddPacks(3);
       this.log('INJECTED +3 OF EVERY PACK');
     });
 
     this.bodyEl.querySelector('#adm-add-rr')?.addEventListener('click', () => {
-      if (!cfg.enabled) return;
+      if (!this.profile.getAdminConfig().enabled) return;
       this.sound?.playCoin();
       const total = this.profile.adminAddRR(100);
       this.log(`RANK RR => ${total} RR`);
@@ -965,14 +1142,14 @@ export class AdminPanel {
     });
 
     this.bodyEl.querySelector('#adm-instant-win')?.addEventListener('click', () => {
-      if (!cfg.enabled) return;
+      if (!this.profile.getAdminConfig().enabled) return;
       const ok = this.cb.onInstantWin?.();
       this.sound?.[ok ? 'playVictory' : 'playAlert']?.('critical');
       this.log(ok ? 'EXECUTED INSTANT VICTORY' : 'NOT IN AN ACTIVE MATCH');
     });
 
     this.bodyEl.querySelector('#adm-max-growth')?.addEventListener('click', () => {
-      if (!cfg.enabled) return;
+      if (!this.profile.getAdminConfig().enabled) return;
       const ok = this.cb.onMaxGrowth?.();
       this.sound?.[ok ? 'playChompAndGrow' : 'playClick']?.(5);
       this.log(ok ? 'MONSTER SET TO STAGE 5 APEX!' : 'START MATCH AS MONSTER FIRST');

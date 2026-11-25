@@ -23,9 +23,14 @@ export class PackOpener {
     this.activeResult = null;
     this.revealedSet = new Set();
 
-    // Lazy 3D mini-stage for tearing the 3D Foil Pack
+    // Shared single WebGL renderer + canvas reused across ALL pack openings
+    // (prevents browser WebGL context exhaustion that previously evicted #game-canvas!)
+    this._sharedCanvas = null;
+    this._sharedRenderer = null;
     this._gl = null;
     this._raf = null;
+    this._timers = new Set();
+    this._openSeq = 0;
     this._ripProgress = 0;
     this._ripped = false;
     this._burstTimer = 0;
@@ -34,9 +39,106 @@ export class PackOpener {
     this._lastRipSoundStep = 0;
   }
 
+  _setTimer(fn, ms) {
+    const id = setTimeout(() => {
+      this._timers.delete(id);
+      fn();
+    }, ms);
+    this._timers.add(id);
+    return id;
+  }
+
+  _clearTimers() {
+    for (const id of this._timers) clearTimeout(id);
+    this._timers.clear();
+  }
+
+  _cleanupOverlayFx() {
+    this.overlay?.querySelectorAll('.pack-ring-wave, .pack-star-spark, .pack-spark-dot').forEach((el) => el.remove());
+    const fxLayer = document.getElementById('pack-impact-layer');
+    if (fxLayer) fxLayer.innerHTML = '';
+  }
+
+  _getOrCreateRenderer(w, h) {
+    let ctxLost = false;
+    if (this._sharedRenderer) {
+      try {
+        const glCtx = this._sharedRenderer.getContext?.();
+        ctxLost = !glCtx || glCtx.isContextLost();
+      } catch {
+        ctxLost = true;
+      }
+    }
+
+    if (!this._sharedRenderer || !this._sharedCanvas || ctxLost) {
+      if (this._sharedRenderer) {
+        try {
+          this._sharedRenderer.dispose();
+        } catch {}
+      }
+      const canvas = document.createElement('canvas');
+      canvas.id = 'pack-3d-canvas';
+      canvas.className = 'pack-3d-canvas';
+      canvas.addEventListener('webglcontextlost', (e) => e.preventDefault(), false);
+
+      const renderer = new THREE.WebGLRenderer({
+        canvas,
+        alpha: true,
+        antialias: true,
+        powerPreference: 'high-performance',
+      });
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.18;
+
+      this._sharedCanvas = canvas;
+      this._sharedRenderer = renderer;
+    }
+
+    this._sharedRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.8));
+    this._sharedRenderer.setSize(w, h, false);
+    this._sharedRenderer.clear();
+
+    return { renderer: this._sharedRenderer, canvas: this._sharedCanvas };
+  }
+
+  _disposePackScene(scene) {
+    if (!scene) return;
+    const geometries = new Set();
+    const materials = new Set();
+    const textures = new Set();
+
+    scene.traverse((obj) => {
+      if (obj.geometry) geometries.add(obj.geometry);
+      if (obj.material) {
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        for (const m of mats) {
+          if (!m) continue;
+          materials.add(m);
+          if (m.map) textures.add(m.map);
+        }
+      }
+    });
+
+    for (const tex of textures) {
+      try { tex.dispose(); } catch {}
+    }
+    for (const mat of materials) {
+      try { mat.dispose(); } catch {}
+    }
+    for (const geo of geometries) {
+      try { geo.dispose(); } catch {}
+    }
+    scene.clear();
+  }
+
   openPack(packId, options = {}) {
     const result = this.profile.openPack(packId, options);
     if (!result) return false;
+    this._openSeq += 1;
+    this._clearTimers();
+    this._stop3DLoop();
+    this._cleanupOverlayFx();
+
     this.activeResult = result;
     this.revealedSet.clear();
     this._ripProgress = 0;
@@ -53,7 +155,10 @@ export class PackOpener {
   }
 
   close() {
+    this._openSeq += 1;
+    this._clearTimers();
     this._stop3DLoop();
+    this._cleanupOverlayFx();
     this.overlay.classList.add('hidden');
     this.stage.classList.remove('pack-quake', 'pack-quake-mega');
     this.stage.innerHTML = '';
@@ -76,12 +181,17 @@ export class PackOpener {
       cancelAnimationFrame(this._raf);
       this._raf = null;
     }
-    if (this._gl?.renderer) {
+    if (this._gl) {
+      this._disposePackScene(this._gl.scene);
       try {
-        this._gl.renderer.dispose();
+        this._gl.renderer?.renderLists?.dispose?.();
+        this._gl.renderer?.clear?.();
       } catch {}
+      this._gl = null;
     }
-    this._gl = null;
+    if (this._sharedCanvas?.parentNode) {
+      this._sharedCanvas.parentNode.removeChild(this._sharedCanvas);
+    }
   }
 
   _makeGlowTexture(hexColor = '#ffe047') {
@@ -158,14 +268,11 @@ export class PackOpener {
     `;
   }
 
-  _build3DPackScene(canvas, pack, glowCol) {
+  _build3DPackScene(wrap, pack, glowCol) {
     const w = Math.max(260, Math.min(440, Math.round(window.innerWidth * 0.62)));
     const h = Math.max(220, Math.min(340, Math.round(window.innerHeight * 0.56)));
-    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: 'high-performance' });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.8));
-    renderer.setSize(w, h, false);
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.18;
+    const { renderer, canvas } = this._getOrCreateRenderer(w, h);
+    wrap.prepend(canvas);
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(36, w / h, 0.1, 40);
@@ -511,6 +618,7 @@ export class PackOpener {
 
   _render3DRipStage() {
     this._stop3DLoop();
+    const seq = this._openSeq;
     const { pack } = this.activeResult;
     const bestCard = this._highestRarity();
     const glowCol = bestCard.raritySpec.color;
@@ -519,7 +627,6 @@ export class PackOpener {
       <div class="pack-sunburst" style="--burst-col:${glowCol}"></div>
       <div class="pack-top-label" style="color:${pack.accent || '#ffe047'}">${pack.name.toUpperCase()}</div>
       <div id="pack-3d-wrap" class="pack-3d-wrap">
-        <canvas id="pack-3d-canvas" class="pack-3d-canvas"></canvas>
         <div id="pack-rip-track" class="pack-rip-track">
           <div class="pack-rip-fill" id="pack-rip-fill"></div>
           <span class="pack-rip-label">✂ SWIPE OR TAP TO RIP OPEN!</span>
@@ -528,15 +635,14 @@ export class PackOpener {
       <div id="pack-tap-hint" class="pack-hint">DRAG ACROSS TOP TO TEAR 3D PACK (3 DROPS!)</div>
     `;
 
-    const canvas = document.getElementById('pack-3d-canvas');
     const wrap = document.getElementById('pack-3d-wrap');
     const fill = document.getElementById('pack-rip-fill');
     const hint = document.getElementById('pack-tap-hint');
 
-    this._build3DPackScene(canvas, pack, glowCol);
+    this._build3DPackScene(wrap, pack, glowCol);
 
     const completeRip = () => {
-      if (this._ripped) return;
+      if (this._ripped || seq !== this._openSeq) return;
       this._ripped = true;
       this._ripProgress = 1;
       if (fill) fill.style.width = '100%';
@@ -545,8 +651,11 @@ export class PackOpener {
       this.stage.classList.remove('pack-quake', 'pack-quake-mega');
       void this.stage.offsetWidth;
       this.stage.classList.add('pack-quake');
-      setTimeout(() => this.stage.classList.remove('pack-quake'), 320);
-      setTimeout(() => {
+      this._setTimer(() => {
+        if (seq === this._openSeq) this.stage.classList.remove('pack-quake');
+      }, 320);
+      this._setTimer(() => {
+        if (seq !== this._openSeq || !this.activeResult) return;
         this._stop3DLoop();
         this._renderCardReveal();
       }, 540);
@@ -592,6 +701,7 @@ export class PackOpener {
   }
 
   _spawnCardImpactFx(cardEl, rarity) {
+    const seq = this._openSeq;
     const isMythic = rarity === 'mythic';
     const isLeg = rarity === 'legendary';
     const isEpic = rarity === 'epic';
@@ -602,7 +712,9 @@ export class PackOpener {
       this.stage.classList.remove('pack-quake', 'pack-quake-mega');
       void this.stage.offsetWidth;
       this.stage.classList.add('pack-quake-mega');
-      setTimeout(() => this.stage.classList.remove('pack-quake-mega'), 440);
+      this._setTimer(() => {
+        if (seq === this._openSeq) this.stage.classList.remove('pack-quake-mega');
+      }, 440);
 
       // Flash + huge slam banner + god-rays burst!
       const fxLayer = document.getElementById('pack-impact-layer');
@@ -614,8 +726,8 @@ export class PackOpener {
           <div class="pack-god-rays" style="--ray-col:${col}"></div>
           <div class="pack-slam-banner" style="--slam-col:${col}">${label}</div>
         `;
-        setTimeout(() => {
-          if (fxLayer) fxLayer.innerHTML = '';
+        this._setTimer(() => {
+          if (seq === this._openSeq && fxLayer) fxLayer.innerHTML = '';
         }, 1250);
       }
       crazyGames.happytime();
@@ -623,7 +735,9 @@ export class PackOpener {
       this.stage.classList.remove('pack-quake');
       void this.stage.offsetWidth;
       this.stage.classList.add('pack-quake');
-      setTimeout(() => this.stage.classList.remove('pack-quake'), 300);
+      this._setTimer(() => {
+        if (seq === this._openSeq) this.stage.classList.remove('pack-quake');
+      }, 300);
     }
 
     // Spawn expanding glossy rarity ring + twinkling 4-point stars & glowing orb burst from the card!
@@ -647,7 +761,7 @@ export class PackOpener {
     wave.style.top = `${cy}px`;
     wave.style.setProperty('--wave-col', colors[0]);
     this.overlay.appendChild(wave);
-    setTimeout(() => wave.remove(), 700);
+    this._setTimer(() => wave.remove(), 700);
 
     for (let i = 0; i < count; i++) {
       const p = document.createElement('span');
@@ -664,7 +778,7 @@ export class PackOpener {
       p.style.width = `${sz}px`;
       p.style.height = `${sz}px`;
       this.overlay.appendChild(p);
-      setTimeout(() => p.remove(), 760);
+      this._setTimer(() => p.remove(), 760);
     }
   }
 
@@ -783,8 +897,13 @@ export class PackOpener {
       });
     });
 
+    const revealSeq = this._openSeq;
     document.getElementById('btn-reveal-all')?.addEventListener('click', () => {
-      cards.forEach((_, i) => setTimeout(() => revealCard(i), i * 240));
+      cards.forEach((_, i) =>
+        this._setTimer(() => {
+          if (revealSeq === this._openSeq && this.activeResult) revealCard(i);
+        }, i * 240)
+      );
     });
 
     document.getElementById('btn-open-another')?.addEventListener('click', () => {

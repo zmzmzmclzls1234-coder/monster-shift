@@ -156,9 +156,9 @@ export const PACK_TYPES = [
 ];
 
 export const THREE_MATCH_TIERS = [
-  { tier: 1, matchesRequired: 3, title: '3-Match Orange Crate', desc: '200 Coins + Slime Pack', coins: 200, packId: 'slime_pack', bonusUnlock: null },
-  { tier: 2, matchesRequired: 6, title: '6-Match Upgrade', desc: '280 Coins + Super Pack + Sunset Orange Skin', coins: 280, packId: 'super_pack', bonusUnlock: { category: 'skin', id: 'sunset' } },
-  { tier: 3, matchesRequired: 9, title: '9-Match Hero Box', desc: '380 Coins + Super Pack + Magnet Unlock', coins: 380, packId: 'super_pack', bonusUnlock: { category: 'survivor', id: 'magnet' } },
+  { tier: 1, matchesRequired: 3, title: '3-Match Epic Monster Vault', desc: '300 Coins + Super Pack + Guaranteed Monster!', coins: 300, packId: 'super_pack', guaranteedNewMonster: true, bonusUnlock: null },
+  { tier: 2, matchesRequired: 6, title: '6-Match Neon Surge Vault', desc: '360 Coins + Neon Cyber Pack + Sunset Orange Skin', coins: 360, packId: 'neon_pack', bonusUnlock: { category: 'skin', id: 'sunset' } },
+  { tier: 3, matchesRequired: 9, title: '9-Match Hero Box', desc: '450 Coins + Neon Cyber Pack + Magnet Unlock', coins: 450, packId: 'neon_pack', bonusUnlock: { category: 'survivor', id: 'magnet' } },
   { tier: 4, matchesRequired: 12, title: '12-Match Hunter Vault', desc: '500 Coins + Super Pack + Magma Unlock', coins: 500, packId: 'super_pack', bonusUnlock: { category: 'monster', id: 'magma' } },
   { tier: 5, matchesRequired: 15, title: '15-Match Mythic Vault', desc: '700 Coins + Mythic Apex Pack + Royal Gold Skin', coins: 700, packId: 'legendary_pack', bonusUnlock: { category: 'skin', id: 'royalgold' } },
 ];

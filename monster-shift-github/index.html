@@ -29,7 +29,7 @@
 
   <!-- Critical inline CSS so the cartoon loading screen appears at 0ms before external files load -->
   <style>
-    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #ff8c1a; }
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #5ecaff; }
     #boot-loader {
       position: fixed;
       inset: 0;
@@ -138,9 +138,11 @@
       el.dataset.done = '1';
       window.__bootDurationMs = Math.round(performance.now() - window.__bootStartMs);
       el.dataset.bootMs = String(window.__bootDurationMs);
+      var fill = document.getElementById('boot-bar-fill');
+      if (fill) { fill.style.transition = 'none'; fill.style.width = '100%'; }
       window.__setBootProgress(100, 'READY!');
       el.classList.add('fade-out');
-      setTimeout(function () { el.style.display = 'none'; }, 250);
+      setTimeout(function () { el.style.display = 'none'; }, 220);
     };
     window.__showQuickLoader = function (label) {
       var el = document.getElementById('boot-loader');
@@ -235,6 +237,10 @@
           </button>
         </div>
       </header>
+
+      <button id="lobby-goal-pill" class="lobby-goal-pill" type="button" title="Daily Quests & Next Reward">
+        <span id="lobby-goal-text">QUEST: PLAY 3 MATCHES (0/3) · +150c</span>
+      </button>
 
       <!-- STRICTLY 4 MAIN LOBBY BUTTONS -->
       <nav class="lobby-dock" aria-label="Main Menu">
@@ -371,9 +377,12 @@
         <h2 id="results-headline" class="results-headline">MONSTER WINS!</h2>
         <p id="results-summary" class="results-summary"></p>
         <div id="results-stats" class="results-stats"></div>
+        <div id="results-xp-box" class="results-xp-box hidden"></div>
         <div id="results-rank-box" class="results-rank-box hidden"></div>
         <div id="results-match-prog" class="results-match-prog"></div>
+        <button id="btn-results-mpass" class="mpass-quick-btn hidden" type="button"></button>
         <button id="btn-results-double" class="dbl-coins-btn hidden" type="button"></button>
+        <button id="btn-results-trial" class="trial-mon-btn hidden" type="button"></button>
         <div class="results-actions">
           <button id="btn-results-lobby" class="dock-btn btn-sky" type="button">LOBBY</button>
           <button id="btn-results-again" class="dock-btn btn-play" type="button">PLAY AGAIN</button>
@@ -470,18 +479,8 @@
       <span id="live-event-text">🔥 2X COIN EVENT · 10:00</span>
     </div>
 
-    <!-- LANDSCAPE-ONLY ROTATE DEVICE OVERLAY -->
-    <div id="rotate-overlay" class="rotate-overlay" aria-live="polite">
-      <svg class="rotate-phone-svg" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <rect x="34" y="16" width="52" height="88" rx="12" fill="#FFFDF6" stroke="#14192B" stroke-width="6"/>
-        <rect x="42" y="28" width="36" height="60" rx="5" fill="#42E87A" stroke="#14192B" stroke-width="4"/>
-        <circle cx="60" cy="95" r="3.8" fill="#14192B"/>
-        <path d="M98 44C106 54 106 70 96 82" stroke="#FFE047" stroke-width="6" stroke-linecap="round"/>
-        <path d="M95 72L95 84L107 82" stroke="#FFE047" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
-      </svg>
-      <div class="rotate-title">ROTATE TO LANDSCAPE!</div>
-      <div class="rotate-sub">MONSTER SHIFT plays best in horizontal landscape mode.</div>
-    </div>
+    <!-- PORTRAIT + LANDSCAPE BOTH SUPPORTED NATIVELY (NO ROTATE WALL!) -->
+    <div id="rotate-overlay" class="rotate-overlay hidden" aria-hidden="true"></div>
   </div>
 
   <script type="module" src="./src/main.js"></script>

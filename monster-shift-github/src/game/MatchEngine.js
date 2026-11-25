@@ -125,6 +125,14 @@ export class MatchEngine {
     this.xmasGiftTimer = 18.0;
     this.localGiftCoins = 0;
 
+    // Active In-Game Arena Coins & Power-Up Orbs (SPEED, SHIELD, MEGA RAPID, FROST NOVA!)
+    this.arenaLootGroup = new THREE.Group();
+    this.group.add(this.arenaLootGroup);
+    this.arenaLoot = [];
+    this.powerupSpawnTimer = 9.0;
+    this.localArenaPickups = 0;
+    this.isNewPlayerWarmup = false;
+
     // Multi-mode Collectible Group (Slime Brawl Energy Jellies & Star Rush Golden Stars!)
     this.gameMode = 'classic';
     this.modeOrbGroup = new THREE.Group();
@@ -245,7 +253,7 @@ export class MatchEngine {
       id: h.id,
       name: h.name || 'Player',
       isBot: false,
-      monsterId: h.monsterId || localProfile.equippedMonster,
+      monsterId: (h.id === this.network.peerId && opts.trialMonsterId) ? opts.trialMonsterId : (h.monsterId || localProfile.equippedMonster),
       survivorId: h.survivorId || localProfile.equippedSurvivor,
       weaponId: h.weaponId || localProfile.equippedWeapon,
       hatId: h.hatId || localProfile.equippedHat,
@@ -342,6 +350,7 @@ export class MatchEngine {
       playMode,
       gameMode,
       duration: modeSpec.duration || MATCH_DURATION,
+      isNewPlayerWarmup: Boolean(opts.isNewPlayerWarmup),
       aiSkill: winRateInfo.aiSkill ?? 0.45,
       aiLabel: winRateInfo.label || 'BALANCED BOTS',
       monsterPlayerId: monsterPlayerIds[0] || null,
@@ -386,6 +395,10 @@ export class MatchEngine {
     this.final15Revealed = false;
     this.tutorialMovedDist = 0;
     this.tutorialMoveDone = false;
+    this.localArenaPickups = 0;
+    this.powerupSpawnTimer = 8.5;
+    this.isNewPlayerWarmup = Boolean(config.isNewPlayerWarmup);
+    this._clearArenaLoot();
     this.matchStartTime = performance.now();
 
     this.arena.setLobbyPedestalVisible(false);
@@ -468,10 +481,11 @@ export class MatchEngine {
         respawnTimer: 0,
         ghostMode: false,
         reviveUsed: false,
+        secondWindUsed: false,
         ghostDashCd: 0,
         ghostDashTimer: 0,
         soulCollected: 0,
-        soulTarget: 5,
+        soulTarget: 3,
         rig,
         revealHalo,
         pos,
@@ -502,6 +516,8 @@ export class MatchEngine {
         tornadoTimer: 0,
         dashTimer: 0,
         speedBoostTimer: perk.startShield && isMonster ? 3.5 : 0,
+        megaTimer: 0,
+        coinSpeedStacks: 0,
         vaultTimer: 0,
         stealthTimer: 0,
         camouTimer: 0,
@@ -542,12 +558,14 @@ export class MatchEngine {
       this.sceneManager.cameraRig.snapToFocus(this.localEntity.pos.x, 0.5, this.localEntity.pos.z);
     }
 
-    // Spawn mode-specific collectibles right at match start!
+    // Spawn mode-specific collectibles + active Arena Coins & Power-Ups right at match start!
     if (this.gameMode === 'slime_brawl') {
       this._spawnModeOrbs('jelly', 12);
     } else if (this.gameMode === 'star_rush') {
       this._spawnModeOrbs('star', 10);
     }
+    this._spawnArenaLoot('coin', 7);
+    this._spawnArenaLoot('powerup', 2);
 
     const le = this.localEntity;
     const isLocalMonster = le?.role === 'monster';
@@ -631,6 +649,7 @@ export class MatchEngine {
     this._clearSoulOrbs();
     this._clearXmasGifts();
     this._clearModeOrbs();
+    this._clearArenaLoot();
     this.hazards.clear();
     for (const e of this.entities) {
       this.group.remove(e.rig.root);
@@ -1447,6 +1466,47 @@ export class MatchEngine {
     if (victim.isLocal && this.getAdminConfig?.()?.godMode) return;
     const m = killer || this.monsterEntity;
     if (!m) return;
+
+    // Early-match / newbie "SECOND WIND" shield escape so Survivors never suffer a frustrating 15s insta-exit!
+    const elapsedInMatch = Math.max(0, (this.matchDuration || 100) - (this.timeRemaining || 0));
+    if (
+      victim.isLocal &&
+      victim.role === 'survivor' &&
+      !victim.secondWindUsed &&
+      m.isBot &&
+      this.playMode !== 'ranked' &&
+      this.gameMode !== 'infection' &&
+      (this.isNewPlayerWarmup || elapsedInMatch < 28)
+    ) {
+      victim.secondWindUsed = true;
+      victim.shieldTimer = 2.6;
+      victim.speedBoostTimer = Math.max(victim.speedBoostTimer || 0, 2.5);
+      victim.snareTimer = 0;
+      victim.slowTimer = 0;
+      victim.bubbledTimer = 0;
+      victim.frozenTimer = 0;
+
+      const dx = victim.pos.x - m.pos.x;
+      const dz = victim.pos.z - m.pos.z;
+      const len = Math.hypot(dx, dz) || 1;
+      victim.pos.x += (dx / len) * 4.4;
+      victim.pos.z += (dz / len) * 4.4;
+      this.arena.resolveCollision(victim.pos, victim.radius);
+      m.knockVel.x -= (dx / len) * 7.5;
+      m.knockVel.z -= (dz / len) * 7.5;
+
+      this.particles.spawnShockwave(victim.pos, { color: '#ffe047', maxScale: 5.4, duration: 0.48 });
+      this.particles.spawnBurst(victim.pos, { count: 26, color: '#ffe047', confetti: true, speed: 7.5, scale: 1.15 });
+      this.sound.playDropBoing();
+      this.sceneManager.cameraRig.addTrauma(0.32);
+      this._emitComicPop(victim.pos, '⚡ SECOND WIND!!', '#ffe047');
+      this.onHudUpdate({
+        type: 'toast',
+        text: '⚡ SECOND WIND! 2.5s GOLDEN SHIELD + SPEED ESCAPE!',
+      });
+      return;
+    }
+
     victim.alive = false;
     victim.rig.root.visible = false;
 
@@ -1588,7 +1648,7 @@ export class MatchEngine {
   _enterGhostMode(e) {
     e.ghostMode = true;
     e.soulCollected = 0;
-    e.soulTarget = 5;
+    e.soulTarget = 3;
     e.ghostDashCd = 0;
     e.ghostDashTimer = 0;
     e.snareTimer = 0;
@@ -1619,11 +1679,11 @@ export class MatchEngine {
     });
     this.onHudUpdate({
       type: 'toast',
-      text: 'GHOST MODE! COLLECT 5 SOUL ORBS TO REVIVE!',
+      text: '👻 GHOST MODE! GRAB 3 SOUL ORBS TO REVIVE!',
     });
   }
 
-  _spawnSoulOrbs(originPos, count = 5) {
+  _spawnSoulOrbs(originPos, count = 3) {
     this._clearSoulOrbs();
     const maxX = Math.max(8, this.arena.halfW - 4.2);
     const maxZ = Math.max(8, this.arena.halfD - 4.2);
@@ -1634,7 +1694,7 @@ export class MatchEngine {
       let bz = 0;
       for (let attempt = 0; attempt < 36; attempt++) {
         const ang = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 1.1;
-        const rad = 11 + Math.random() * Math.min(maxX, maxZ) * 0.85;
+        const rad = 8.5 + Math.random() * Math.min(maxX, maxZ) * 0.68;
         const tx = THREE.MathUtils.clamp(Math.cos(ang) * rad, -maxX, maxX);
         const tz = THREE.MathUtils.clamp(Math.sin(ang) * rad, -maxZ, maxZ);
         const p = new THREE.Vector3(tx, 0, tz);
@@ -2157,6 +2217,192 @@ export class MatchEngine {
     this.modeOrbs = [];
   }
 
+  _clearArenaLoot() {
+    while (this.arenaLootGroup.children.length) {
+      this.arenaLootGroup.remove(this.arenaLootGroup.children[0]);
+    }
+    this.arenaLoot = [];
+  }
+
+  _findClearArenaSpot(pad = 1.6) {
+    const maxX = Math.max(8, (this.arena?.halfW || 36) - 4.5);
+    const maxZ = Math.max(8, (this.arena?.halfD || 29) - 4.5);
+    const p = new THREE.Vector3();
+    for (let attempt = 0; attempt < 14; attempt++) {
+      p.set((Math.random() - 0.5) * 2 * maxX, 0, (Math.random() - 0.5) * 2 * maxZ);
+      this.arena.resolveCollision(p, pad);
+      if (!this.arena.getBushContaining(p.x, p.z)) break;
+    }
+    return p;
+  }
+
+  _spawnArenaLoot(category = 'coin', count = 1) {
+    const powerupTypes = [
+      { id: 'speed', color: '#36e2ff', label: '⚡ TURBO SPEED!' },
+      { id: 'shield', color: '#52f768', label: '🛡 SHIELD UP!' },
+      { id: 'mega', color: '#ff9d24', label: '🔥 MEGA RAPID!' },
+      { id: 'freeze', color: '#88f3ff', label: '❄ FROST NOVA!' },
+    ];
+    for (let i = 0; i < count; i++) {
+      const p = this._findClearArenaSpot(1.8);
+      const g = new THREE.Group();
+      g.position.set(p.x, 0, p.z);
+      let kind = 'coin';
+      let label = '+8c';
+      let color = '#ffcf24';
+      let mesh;
+
+      if (category === 'coin') {
+        const coinGeo = new THREE.CylinderGeometry(0.46, 0.46, 0.14, 14);
+        coinGeo.rotateX(Math.PI / 2);
+        const coinMat = new THREE.MeshStandardMaterial({
+          color: '#ffd93b',
+          emissive: '#ff9d00',
+          emissiveIntensity: 0.45,
+          roughness: 0.22,
+          metalness: 0.35,
+        });
+        mesh = new THREE.Mesh(coinGeo, coinMat);
+        mesh.position.y = 0.85;
+        g.add(mesh);
+
+        const glowRing = new THREE.Mesh(
+          new THREE.RingGeometry(0.42, 0.62, 16),
+          new THREE.MeshBasicMaterial({ color: '#ffe047', transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false })
+        );
+        glowRing.rotation.x = -Math.PI / 2;
+        glowRing.position.y = 0.08;
+        g.add(glowRing);
+      } else {
+        const spec = powerupTypes[Math.floor(Math.random() * powerupTypes.length)];
+        kind = spec.id;
+        label = spec.label;
+        color = spec.color;
+        const orbMat = new THREE.MeshStandardMaterial({
+          color,
+          emissive: color,
+          emissiveIntensity: 0.65,
+          roughness: 0.18,
+        });
+        mesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.56, 0), orbMat);
+        mesh.position.y = 1.05;
+        g.add(mesh);
+
+        const halo = new THREE.Mesh(
+          new THREE.TorusGeometry(0.74, 0.08, 8, 20),
+          new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.85 })
+        );
+        halo.rotation.x = Math.PI / 2;
+        halo.position.y = 1.05;
+        g.add(halo);
+        g.userData.halo = halo;
+
+        const baseRing = new THREE.Mesh(
+          new THREE.RingGeometry(0.68, 0.96, 20),
+          new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.62, side: THREE.DoubleSide, depthWrite: false })
+        );
+        baseRing.rotation.x = -Math.PI / 2;
+        baseRing.position.y = 0.09;
+        g.add(baseRing);
+      }
+
+      this.arenaLootGroup.add(g);
+      this.arenaLoot.push({ kind, category, label, color, x: p.x, z: p.z, group: g, mesh, t: Math.random() * 6 });
+    }
+  }
+
+  _updateArenaLoot(dt) {
+    // Periodic Power-Up orb respawn so every 10s brings exciting map control!
+    this.powerupSpawnTimer -= dt;
+    if (this.powerupSpawnTimer <= 0) {
+      this.powerupSpawnTimer = 10.5;
+      const activePowerups = this.arenaLoot.filter((item) => item.category === 'powerup').length;
+      if (activePowerups < 3) this._spawnArenaLoot('powerup', 1);
+    }
+
+    for (let i = this.arenaLoot.length - 1; i >= 0; i--) {
+      const item = this.arenaLoot[i];
+      item.t += dt;
+      if (item.category === 'coin') {
+        item.mesh.rotation.y += dt * 3.4;
+        item.mesh.position.y = 0.82 + Math.sin(item.t * 4.2) * 0.14;
+      } else {
+        item.mesh.rotation.y += dt * 2.8;
+        item.mesh.rotation.x += dt * 1.4;
+        item.mesh.position.y = 1.02 + Math.sin(item.t * 3.8) * 0.18;
+        if (item.group.userData.halo) {
+          item.group.userData.halo.rotation.z += dt * 3.2;
+          item.group.userData.halo.position.y = item.mesh.position.y;
+        }
+      }
+
+      let picker = null;
+      for (const e of this.entities) {
+        if (!e.alive) continue;
+        // Let human players prioritize grabbing arena coins; bots & humans both contest Power-Ups!
+        if (item.category === 'coin' && e.isBot) continue;
+        if (Math.hypot(e.pos.x - item.x, e.pos.z - item.z) <= e.radius + 0.98) {
+          picker = e;
+          break;
+        }
+      }
+      if (!picker) continue;
+
+      this.arenaLootGroup.remove(item.group);
+      this.arenaLoot.splice(i, 1);
+
+      if (item.kind === 'coin') {
+        picker.coinSpeedStacks = Math.min(5, (picker.coinSpeedStacks || 0) + 1);
+        this.particles.spawnBurst(new THREE.Vector3(item.x, 0.9, item.z), { count: 12, color: '#ffe047', speed: 4.8, scale: 0.78 });
+        if (picker.isLocal) {
+          this.localGiftCoins += 8;
+          this.localArenaPickups += 1;
+          this.sound.playCoin();
+          this._emitComicPop(picker.pos, `+8c · +${picker.coinSpeedStacks * 4}% SPD`, '#ffe047');
+        }
+        this._spawnArenaLoot('coin', 1);
+      } else {
+        this.particles.spawnBurst(new THREE.Vector3(item.x, 1.0, item.z), { count: 22, color: item.color, confetti: true, speed: 6.5, scale: 1.0 });
+        this.particles.spawnShockwave(new THREE.Vector3(item.x, 0.2, item.z), { color: item.color, maxScale: 4.5, duration: 0.42 });
+        if (picker.isLocal) {
+          this.localArenaPickups += 1;
+          this.localCoopActions += 1;
+          this.sound.playVictory();
+          this._emitComicPop(picker.pos, item.label, item.color);
+          this.onHudUpdate({ type: 'toast', text: item.label });
+        }
+
+        if (item.kind === 'speed') {
+          picker.speedBoostTimer = Math.max(picker.speedBoostTimer, 5.5);
+          picker.abilityCooldown = 0;
+        } else if (item.kind === 'shield') {
+          picker.shieldTimer = Math.max(picker.shieldTimer, 6.0);
+        } else if (item.kind === 'mega') {
+          picker.megaTimer = Math.max(picker.megaTimer || 0, 6.5);
+          picker.fireCooldown = 0;
+          picker.abilityCooldown = 0;
+        } else if (item.kind === 'freeze') {
+          this.particles.spawnShockwave(picker.pos, { color: '#7ee6ff', maxScale: 9.5, duration: 0.5 });
+          if (picker.isLocal) this.sound.playFreeze();
+          for (const target of this.entities) {
+            if (target.id === picker.id || !target.alive) continue;
+            const isEnemy =
+              this.gameMode === 'slime_brawl' || this.gameMode === 'snowball_fight'
+                ? true
+                : target.role !== picker.role;
+            if (!isEnemy) continue;
+            if (target.pos.distanceTo(picker.pos) <= 9.5) {
+              target.slowTimer = Math.max(target.slowTimer, 2.4);
+              target.slowFactor = Math.min(target.slowFactor, 0.45);
+              target.frozenTimer = Math.max(target.frozenTimer, 2.0);
+              if (target.role === 'monster') target.stunTimer = Math.max(target.stunTimer, 0.9);
+            }
+          }
+        }
+      }
+    }
+  }
+
   _spawnModeOrbs(kind = 'jelly', count = 1, nearPos = null) {
     const maxX = Math.max(8, this.arena.halfW - 4.5);
     const maxZ = Math.max(8, this.arena.halfD - 4.5);
@@ -2464,9 +2710,11 @@ export class MatchEngine {
     this._clearSoulOrbs();
     this._clearXmasGifts();
     this._clearModeOrbs();
+    this._clearArenaLoot();
 
     const modeSpec = getGameModeById(this.gameMode);
-    const elapsedSec = Math.min(modeSpec.duration || MATCH_DURATION, Math.round((performance.now() - this.matchStartTime) / 1000));
+    const totalDur = modeSpec.duration || MATCH_DURATION;
+    const elapsedSec = Math.max(1, Math.min(totalDur, Math.round(totalDur - this.timeRemaining)));
     const localRole = this.localEntity?.role || 'survivor';
 
     let resolvedFfaWinner = ffaWinnerEnt;
@@ -2559,6 +2807,7 @@ export class MatchEngine {
       weaponHits: this.localWeaponHits,
       coopActions: this.localCoopActions,
       abilitiesUsed: this.localAbilitiesUsed,
+      arenaPickups: this.localArenaPickups || 0,
       participation,
       participationPct,
       elapsedSec,
@@ -2591,21 +2840,21 @@ export class MatchEngine {
       this.sceneManager.cameraRig.followTarget(c.focusEnt.pos, null, 0.72);
     }
 
-    // Phase 1 (0.0s .. 1.5s): Dramatic 1.5s pause while zooming onto the winner(s)
-    if (c.elapsed < 1.5) {
+    // Phase 1 (0.0s .. 0.85s): Quick dramatic zoom onto the winner(s)
+    if (c.elapsed < 0.85) {
       for (const w of c.winners) {
         // Gently face camera
         let diff = 0 - w.yaw;
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
-        w.yaw += diff * Math.min(1, dt * 6);
+        w.yaw += diff * Math.min(1, dt * 8);
         w.rig.root.rotation.y = w.yaw;
         w.rig.update(dt, 0.4);
       }
       return;
     }
 
-    // Phase 2 (1.5s .. 4.0s): "~~~ WINS!" banner pops + Winners JUMP-JUMP-JUMP and cheer!
+    // Phase 2 (0.85s .. 2.4s): "~~~ WINS!" banner pops + Winners JUMP and cheer!
     if (!c.bannerShown) {
       c.bannerShown = true;
       if (c.localWon) {
@@ -2650,9 +2899,9 @@ export class MatchEngine {
       }
     }
 
-    const cheerT = c.elapsed - 1.5;
+    const cheerT = c.elapsed - 0.85;
     c.confettiAccum += dt;
-    const spawnConfetti = c.confettiAccum >= 0.45;
+    const spawnConfetti = c.confettiAccum >= 0.4;
     if (spawnConfetti) c.confettiAccum = 0;
 
     c.winners.forEach((w, idx) => {
@@ -2673,8 +2922,8 @@ export class MatchEngine {
       }
     });
 
-    // Phase 3 (4.0s): Transition cleanly to Results UI!
-    if (c.elapsed >= 4.0) {
+    // Phase 3 (2.4s): Snappy transition to Results UI!
+    if (c.elapsed >= 2.4) {
       c.finished = true;
       for (const w of c.winners) {
         w.rig.root.position.set(w.pos.x, 0, w.pos.z);
@@ -3075,9 +3324,11 @@ export class MatchEngine {
         }
       }
 
-      // Decay cooldowns & timers
-      if (e.abilityCooldown > 0) e.abilityCooldown = Math.max(0, e.abilityCooldown - dt);
-      if (e.fireCooldown > 0) e.fireCooldown = Math.max(0, e.fireCooldown - dt);
+      // Decay cooldowns & timers (MEGA power-up accelerates weapon & ability recharge 2.5x!)
+      const cdDt = (e.megaTimer || 0) > 0 ? dt * 2.5 : dt;
+      if (e.megaTimer > 0) e.megaTimer = Math.max(0, e.megaTimer - dt);
+      if (e.abilityCooldown > 0) e.abilityCooldown = Math.max(0, e.abilityCooldown - cdDt);
+      if (e.fireCooldown > 0) e.fireCooldown = Math.max(0, e.fireCooldown - cdDt);
       if (e.boostPadLock > 0) e.boostPadLock = Math.max(0, e.boostPadLock - dt);
       if (e.bumpSoundLock > 0) e.bumpSoundLock = Math.max(0, e.bumpSoundLock - dt);
       if (e.speedBoostTimer > 0) e.speedBoostTimer = Math.max(0, e.speedBoostTimer - dt);
@@ -3265,9 +3516,13 @@ export class MatchEngine {
         : e.survivorSpec.speed;
 
       if (e.perk?.speedMult) speed *= e.perk.speedMult;
+      if (e.coinSpeedStacks > 0) speed *= 1 + Math.min(5, e.coinSpeedStacks) * 0.04;
       if (this.gameMode === 'turbo_chaos') speed *= 1.2;
       if (e.isLocal && admin.active && admin.speedBoost) speed *= 1.55;
       if (e.isBot) speed *= (0.78 + this.aiSkill * 0.24); // Rank + Win-Rate scaled bot pacing!
+      if (this.isNewPlayerWarmup && e.isBot && e.role === 'monster' && (performance.now() - this.matchStartTime) < 13000) {
+        speed *= 0.78;
+      }
       if (e.speedBoostTimer > 0) speed *= 1.44;
       if (e.role === 'survivor' && e.coopBoosted) speed *= 1.08;
       if (e.slowTimer > 0) speed *= e.slowFactor;
@@ -3464,8 +3719,9 @@ export class MatchEngine {
       this._updateGhostMode(dt, localAbility, localFire);
     }
 
-    // Update seamless in-match Holiday Mystery Gift Boxes & Mode Collectibles!
+    // Update seamless in-match Holiday Mystery Gift Boxes, Arena Coins/Power-Ups & Mode Collectibles!
     this._updateXmasGifts(dt);
+    this._updateArenaLoot(dt);
     this._updateModeMechanics(dt);
     if (!this.active) return;
 
@@ -3665,9 +3921,9 @@ export class MatchEngine {
         coopBoosted: Boolean(le?.role === 'survivor' && le.alive && le.coopBoosted),
         ghostMode: inGhost,
         soulCollected: le?.soulCollected || 0,
-        soulTarget: le?.soulTarget || 5,
+        soulTarget: le?.soulTarget || 3,
         statusText: inGhost
-          ? `GHOST · SOUL ORBS ${le.soulCollected || 0}/${le.soulTarget || 5}`
+          ? `GHOST · SOUL ORBS ${le.soulCollected || 0}/${le.soulTarget || 3}`
           : !le?.alive && (le?.respawnTimer || 0) > 0
           ? `RESPAWNING IN ${Math.max(1, Math.ceil(le.respawnTimer))}s`
           : this.gameMode === 'star_rush'

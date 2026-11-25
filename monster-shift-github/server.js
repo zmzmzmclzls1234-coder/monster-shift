@@ -363,6 +363,7 @@ wss.on('connection', (ws, req) => {
     mapName: '',
     isAdmin: false,
     joinedAt: Date.now(),
+    lastSeen: Date.now(),
   });
   peakOnline = Math.max(peakOnline, clientState.size);
   joinClientRoom(ws, 'PARK');
@@ -376,6 +377,8 @@ wss.on('connection', (ws, req) => {
   }
 
   ws.on('message', (data) => {
+    const curSt = clientState.get(ws);
+    if (curSt) curSt.lastSeen = Date.now();
     const text = data.toString();
     let parsed = null;
     try {
@@ -457,7 +460,18 @@ wss.on('connection', (ws, req) => {
     if (parsed.type === 'admin_gift_player') {
       if (!isValidAdminSecret(parsed.secret)) return;
       const targetId = String(parsed.targetId || '').trim();
-      const targetWs = idToClient.get(targetId);
+      const targetName = sanitizeLbName(parsed.targetName || '');
+      let targetWs = idToClient.get(targetId);
+      // Fallback if player reconnected under a new socketId with the same nickname
+      if ((!targetWs || targetWs.readyState !== 1) && targetName && targetName !== 'Player') {
+        let bestTs = 0;
+        for (const [sock, st] of clientState) {
+          if (sock.readyState === 1 && st.name === targetName && (st.lastSeen || 0) >= bestTs) {
+            targetWs = sock;
+            bestTs = st.lastSeen || 0;
+          }
+        }
+      }
       const tst = targetWs ? clientState.get(targetWs) : null;
       const coins = Math.max(0, Math.min(100000, Math.floor(Number(parsed.coins) || 0)));
       const allowedPacks = ['xmas_pack', 'slime_pack', 'super_pack', 'neon_pack', 'legendary_pack'];
@@ -489,13 +503,41 @@ wss.on('connection', (ws, req) => {
             type: 'admin_ack',
             action: 'gift_player',
             ok: Boolean(targetWs && targetWs.readyState === 1),
-            targetId,
-            targetName: tst?.name || 'Player',
+            targetId: tst?.id || targetId,
+            targetName: tst?.name || targetName || 'Player',
             coins,
             packId,
             packCount,
           })
         );
+      }
+      return;
+    }
+
+    // LIVE ADMIN ABUSE: Grant Coins AND/OR Packs live to ALL currently online players!
+    if (parsed.type === 'admin_grant_all') {
+      if (!isValidAdminSecret(parsed.secret)) return;
+      const coins = Math.max(0, Math.min(100000, Math.floor(Number(parsed.amount) || 0)));
+      const allowedPacks = ['xmas_pack', 'slime_pack', 'super_pack', 'neon_pack', 'legendary_pack'];
+      const packId = allowedPacks.includes(parsed.packId) ? parsed.packId : '';
+      const packCount = packId ? Math.max(1, Math.min(20, Math.floor(Number(parsed.packCount) || 1))) : 0;
+      if (!coins && !packCount) return;
+      const reason = sanitizeAdminText(parsed.reason || '', 80);
+      const sender = sanitizeLbName(parsed.sender || 'ADMIN');
+      const id = `gall_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const reached = broadcastGlobal({
+        type: 'admin_personal_gift',
+        id,
+        coins,
+        packId,
+        packCount,
+        scope: 'global',
+        reason,
+        sender,
+        ts: Date.now(),
+      });
+      if (ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'admin_ack', action: 'grant_all', amount: coins, packId, packCount, reached }));
       }
       return;
     }
@@ -624,6 +666,17 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => removeClient(ws));
   ws.on('error', () => removeClient(ws));
 });
+
+// Sweep stale zombie sockets every 20s so onlinePlayers list stays 100% accurate
+setInterval(() => {
+  const now = Date.now();
+  for (const [sock, st] of clientState) {
+    if (sock.readyState !== 1 || now - (st.lastSeen || st.joinedAt || now) > 45000) {
+      try { sock.terminate?.(); } catch {}
+      removeClient(sock);
+    }
+  }
+}, 20000).unref?.();
 
 server.listen(PORT, () => {
   console.log(`MONSTER SHIFT server live at http://localhost:${PORT} (WebSocket at /ws)`);

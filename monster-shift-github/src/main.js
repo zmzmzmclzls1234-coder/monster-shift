@@ -31,11 +31,28 @@ class MonsterShiftApp {
     this._adTransitionBusy = false;
     this._rouletteBusy = false;
     this._lastCasualModeId = null;
+    this._matchesSinceMidgame = 0;
+    this._lastMidgameAt = 0;
 
-    // Strictly initialize CrazyGames SDK BEFORE calling loadingStart()/loadingStop()!
+    // Hook CrazyGames Cloud Save (SDK.data) writer into ProfileStore (safe no-op offline)
+    this.profile.setCloudWriter((payload) => crazyGames.setCloudItem('ms_save_v1', payload));
+
+    // Strictly initialize CrazyGames SDK BEFORE calling loadingStart()/loadingStop(), then hydrate Cloud Save!
+    const hydrateCloud = () => {
+      if (crazyGames.isCloudSaveAvailable()) {
+        const cloudRaw = crazyGames.getCloudItem('ms_save_v1');
+        if (cloudRaw && this.profile.mergeCloudSave(cloudRaw)) {
+          this.applySettings();
+          this.ui?.refreshLobbyChrome?.();
+        }
+      }
+    };
     crazyGames.init({
       onMuteChange: (muted) => this.sound.setGlobalMute(muted),
       onPauseChange: (paused) => this.setPaused(paused, 'sdk'),
+      onReady: hydrateCloud,
+    }).then((ok) => {
+      if (ok) hydrateCloud();
     });
     crazyGames.loadingStart();
 
@@ -100,6 +117,9 @@ class MonsterShiftApp {
           this.ui.closeDrawer(true);
         }
         this.ui.refreshLobbyChrome();
+        if (this.mode === 'results') {
+          this.ui.refreshResultsHooks?.();
+        }
       },
     });
 
@@ -132,6 +152,16 @@ class MonsterShiftApp {
         crazyGames.gameplayStop();
         this.tutorial.stop();
 
+        // Apply Win Streak Bonus (+25% / +50% / +75% / +100% coins on consecutive wins!)
+        if (summary.localWon) {
+          const nextStreak = (this.profile.state.winStreak || 0) + 1;
+          const streakPct = nextStreak >= 2 ? Math.min(100, (nextStreak - 1) * 25) : 0;
+          if (streakPct > 0) {
+            summary.coinsEarned = Math.round(summary.coinsEarned * (1 + streakPct / 100));
+            summary.streakBonusPct = streakPct;
+          }
+        }
+
         // Apply active global Admin Coin Multiplier Event (e.g. 2X / 3X / 5X / 10X) to ALL online players!
         const evMult = this.network.getActiveCoinMultiplier?.() || 1;
         if (evMult > 1) {
@@ -140,12 +170,14 @@ class MonsterShiftApp {
           summary.eventMultiplier = evMult;
         }
 
-        this.profile.recordMatch({
+        this._matchesSinceMidgame += 1;
+        summary.progression = this.profile.recordMatch({
           won: summary.localWon,
           eliminations: summary.eliminations,
           weaponHits: summary.weaponHits,
           coopActions: summary.coopActions,
           coinsEarned: summary.coinsEarned,
+          arenaPickups: summary.arenaPickups || 0,
         });
 
         // Apply Ranked RR gain/loss & promotion check if Ranked Mode!
@@ -208,6 +240,7 @@ class MonsterShiftApp {
         },
         onStartMatch: () => this.handleStartMatchFromUi(),
         onActivateMonsterPass: (source) => this.activateMonsterPass(source),
+        onActivateMythicTrial: (monsterId) => this.activateMythicTrial(monsterId),
         onClaimDoubleCoins: (summary) => this.claimDoubleCoins(summary),
         onGraphicsQualityChanged: () => this.applySettings(),
         getResolvedGraphicsQuality: () => this.getResolvedGraphicsQuality(),
@@ -270,6 +303,14 @@ class MonsterShiftApp {
       } else if (evt.type === 'admin_grant_coins' && evt.amount > 0) {
         const added = this.profile.grantBonusCoins(evt.amount);
         this.ui.refreshLobbyChrome();
+        this.ui.rerenderActiveDrawer?.();
+        if (this.mode === 'match' && this.match.active) {
+          const le = this.match.entities?.find((e) => e.isLocal);
+          if (le?.pos) {
+            this.particles.spawnBurst(le.pos, { count: 28, color: '#ffe047', confetti: true, speed: 7.5, scale: 1.15 });
+            this.match._emitComicPop?.(le.pos, `+${added.toLocaleString()} COINS!!`, '#ffe047');
+          }
+        }
         this.sound.playVictory();
         this.sound.playCoin();
         setTimeout(() => this.sound.playCoin(), 140);
@@ -282,9 +323,10 @@ class MonsterShiftApp {
         });
       } else if (evt.type === 'admin_personal_gift') {
         const parts = [];
+        let addedCoins = 0;
         if (evt.coins > 0) {
-          const added = this.profile.grantBonusCoins(evt.coins);
-          if (added > 0) parts.push(`+${added.toLocaleString()} COINS`);
+          addedCoins = this.profile.grantBonusCoins(evt.coins);
+          if (addedCoins > 0) parts.push(`+${addedCoins.toLocaleString()} COINS`);
         }
         if (evt.packId && evt.packCount > 0) {
           const addedP = this.profile.grantBonusPack(evt.packId, evt.packCount);
@@ -295,12 +337,25 @@ class MonsterShiftApp {
         }
         if (parts.length > 0) {
           this.ui.refreshLobbyChrome();
+          this.ui.rerenderActiveDrawer?.();
+          if (this.mode === 'match' && this.match.active) {
+            const le = this.match.entities?.find((e) => e.isLocal);
+            if (le?.pos) {
+              this.particles.spawnBurst(le.pos, { count: 32, color: '#ffe047', confetti: true, speed: 8.0, scale: 1.2 });
+              this.match._emitComicPop?.(le.pos, `🎁 ${parts[0]}!`, '#ffe047');
+            }
+          }
           this.sound.playVictory();
           this.sound.playCoin();
           setTimeout(() => this.sound.playCoin(), 150);
+          const isGlobal = evt.scope === 'global';
           this.ui.showAdminBroadcast({
-            text: `PERSONAL GIFT: ${parts.join(' & ')}!`,
-            subText: evt.reason || `SPECIAL REWARD JUST FOR YOU FROM ${(evt.sender || 'ADMIN').toUpperCase()}!`,
+            text: isGlobal ? `${parts.join(' & ')} GIFT!!` : `PERSONAL GIFT: ${parts.join(' & ')}!`,
+            subText:
+              evt.reason ||
+              (isGlobal
+                ? `GLOBAL REWARD DROP FROM ${(evt.sender || 'ADMIN').toUpperCase()}!`
+                : `SPECIAL REWARD JUST FOR YOU FROM ${(evt.sender || 'ADMIN').toUpperCase()}!`),
             sender: evt.sender || 'ADMIN',
             style: 'gift',
             durationMs: 7000,
@@ -313,11 +368,12 @@ class MonsterShiftApp {
 
     this._bindCanvasInteraction();
     this.applySettings();
-    // Returning players jump straight into Lobby for instant 1-tap play; new players get the interactive intro (with instant PLAY NOW!)
-    if (this.profile.state.introSeen) {
-      this.enterLobby();
+    // Brand-new visitors (0 matches) drop STRAIGHT into Match #1 as the Monster for 80%+ Gameplay Conversion!
+    // Returning players & party-link joiners open directly into the Lobby!
+    if ((this.profile.state.matchesCompleted || 0) === 0 && !this.network.inParty) {
+      this.launchInstantFirstMatch();
     } else {
-      this.startFirstTimeIntro();
+      this.enterLobby();
     }
 
     this.clock = new THREE.Clock();
@@ -422,16 +478,20 @@ class MonsterShiftApp {
     else this._pauseReasons.delete(reason);
 
     const nowPaused = this.isPaused();
+    // Per CrazyGames SDK docs: do NOT call gameplayStop() when browser tab merely unfocuses ('visibility')!
+    const explicitGameplayPause = this._pauseReasons.has('user') || this._pauseReasons.has('sdk');
     const inMatch = this.mode === 'match';
 
     this.sound.setPausedMute(nowPaused);
     if (inMatch) {
       this.match.setPaused(nowPaused);
-      if (nowPaused) {
-        crazyGames.gameplayStop();
-      } else {
+      if (!nowPaused) {
         this.clock.getDelta(); // Discard elapsed paused time so no dt spike occurs
-        if (this.match.active) crazyGames.gameplayStart();
+      }
+      if (explicitGameplayPause) {
+        crazyGames.gameplayStop();
+      } else if (this.match.active) {
+        crazyGames.gameplayStart();
       }
     }
 
@@ -467,14 +527,35 @@ class MonsterShiftApp {
     });
   }
 
+  _shouldShowMidgameAd() {
+    // Protect new players: ZERO midgame ads for their first 2 matches!
+    if ((this.profile.state.matchesCompleted || 0) <= 2) return false;
+    // Never spam ads back-to-back: require >= 2 matches AND >= 180s since last midgame ad!
+    if (this._matchesSinceMidgame < 2) return false;
+    if (this._lastMidgameAt > 0 && Date.now() - this._lastMidgameAt < 180000) return false;
+    return true;
+  }
+
+  async _maybeRequestMidgameAd() {
+    if (this._skipNextMidgame) {
+      this._skipNextMidgame = false;
+      this._matchesSinceMidgame = 0;
+      this._lastMidgameAt = Date.now();
+      return;
+    }
+    if (!this._shouldShowMidgameAd()) return;
+    this._matchesSinceMidgame = 0;
+    this._lastMidgameAt = Date.now();
+    await crazyGames.requestAd('midgame');
+  }
+
   async handleReturnToLobbyFromUi() {
     if (this._adTransitionBusy) return;
     const fromResults = this.mode === 'results';
     if (fromResults) {
       this._adTransitionBusy = true;
       try {
-        if (this._skipNextMidgame) this._skipNextMidgame = false;
-        else await crazyGames.requestAd('midgame');
+        await this._maybeRequestMidgameAd();
       } finally {
         this._adTransitionBusy = false;
       }
@@ -488,8 +569,7 @@ class MonsterShiftApp {
     if (fromResults) {
       this._adTransitionBusy = true;
       try {
-        if (this._skipNextMidgame) this._skipNextMidgame = false;
-        else await crazyGames.requestAd('midgame');
+        await this._maybeRequestMidgameAd();
       } finally {
         this._adTransitionBusy = false;
       }
@@ -535,9 +615,12 @@ class MonsterShiftApp {
       const el = document.documentElement;
       if (!document.fullscreenElement && el.requestFullscreen) {
         el.requestFullscreen({ navigationUI: 'hide' }).then(() => {
-          try {
-            screen.orientation?.lock?.('landscape')?.catch?.(() => {});
-          } catch {}
+          // Only lock landscape if user is already holding their device horizontally; portrait works natively!
+          if (window.innerWidth >= window.innerHeight) {
+            try {
+              screen.orientation?.lock?.('landscape')?.catch?.(() => {});
+            } catch {}
+          }
         }).catch(() => {});
       }
     };
@@ -594,6 +677,19 @@ class MonsterShiftApp {
     }
   }
 
+  launchInstantFirstMatch() {
+    this.applySettings();
+    const config = this.match.buildMatchConfig(this.profile.state, this.profile.getWinRateInfo(), {
+      firstMatchMonsterId: this.network.peerId,
+      isNewPlayerWarmup: true,
+      gameMode: 'classic',
+    });
+    this._beginMatchWithConfig(config);
+    setTimeout(() => {
+      if (this.mode === 'match') this.tutorial.startInMatchControls();
+    }, 850);
+  }
+
   launchMultiplayerMatch() {
     if (this._rouletteBusy) return;
     // Only the Party Host can launch a match when multiple humans are in a party!
@@ -606,15 +702,22 @@ class MonsterShiftApp {
     const isFirstEverMatch = (this.profile.state.matchesCompleted || 0) === 0 && !this.profile.getAdminConfig().active;
 
     const startWithMode = (gameModeId) => {
+      const trialMonsterId = this.profile.consumeMythicTrial();
       const config = this.match.buildMatchConfig(this.profile.state, this.profile.getWinRateInfo(), {
-        forcedMonsterPlayerId: usePass ? this.network.peerId : null,
-        firstMatchMonsterId: !usePass && isFirstEverMatch ? this.network.peerId : null,
+        forcedMonsterPlayerId: usePass || trialMonsterId ? this.network.peerId : null,
+        firstMatchMonsterId: !usePass && !trialMonsterId && isFirstEverMatch ? this.network.peerId : null,
+        trialMonsterId,
+        isNewPlayerWarmup: (this.profile.state.matchesCompleted || 0) < 3,
         gameMode: gameModeId,
       });
       if (config.monsterPassUsed) this.profile.consumeMonsterPass();
       this.network.broadcastMatchStart(config);
       this._beginMatchWithConfig(config);
-      if (config.monsterPassUsed) {
+      if (trialMonsterId) {
+        setTimeout(() => {
+          if (this.mode === 'match') this.ui.showAlert('mutation', '⚡ MYTHIC TRIAL: YOU ARE THE MONSTER!');
+        }, 700);
+      } else if (config.monsterPassUsed) {
         setTimeout(() => {
           if (this.mode === 'match') this.ui.showAlert('mutation', 'MONSTER PASS: YOU ARE THE MONSTER!');
         }, 700);
@@ -663,6 +766,15 @@ class MonsterShiftApp {
       return { ...r, test: res.test };
     }
     return this.profile.activateMonsterPass(source);
+  }
+
+  /** Rewarded "TRY MYTHIC MONSTER FREE": lets player test a Mythic Monster as guaranteed Monster next match! */
+  async activateMythicTrial(monsterId = '') {
+    const res = await crazyGames.requestRewarded('mythic_trial', { testCooldownMs: 15000 });
+    if (!res.rewarded) return { ok: false, reason: res.reason, waitSec: res.waitSec };
+    if (!res.test) this._skipNextMidgame = true;
+    const m = this.profile.activateMythicTrial(monsterId);
+    return { ok: Boolean(m), monster: m, test: res.test };
   }
 
   /** Results screen "2X COINS (WATCH AD)": grants the match's coins one more time. */
